@@ -306,7 +306,7 @@ static inline uint8_t clip_int_u8(int x)
 
 static inline uint16_t clip_int_u16(int32_t x, int32_t maxi)
 {
-  x = (x + (1 << 13)) >> 14;
+  x = (x + (1 << 11)) >> 12;
   if (x < 0) return 0;
   if (x > maxi) return (uint16_t) maxi;
   return static_cast<uint16_t>(x);
@@ -492,11 +492,11 @@ Op_YCbCr_to_RGB<Pixel>::convert_colorspace(const std::shared_ptr<const HeifPixel
     coeffs.b_cb *= 1.1429f;
   }
 
-  // (14 + sign) bits reserved
-  int32_t r_cr = (int32_t) (coeffs.r_cr * (1<<14) + 0.5);
-  int32_t g_cb = (int32_t) (coeffs.g_cb * (1<<14) + 0.5);
-  int32_t g_cr = (int32_t) (coeffs.g_cr * (1<<14) + 0.5);
-  int32_t b_cb = (int32_t) (coeffs.b_cb * (1<<14) + 0.5);
+  // (12 + sign) bits reserved
+  int32_t r_cr = (int32_t) (coeffs.r_cr * (1<<12) + (coeffs.r_cr > 0 ? 0.5 : -0.5));
+  int32_t g_cb = (int32_t) (coeffs.g_cb * (1<<12) + (coeffs.g_cb > 0 ? 0.5 : -0.5));
+  int32_t g_cr = (int32_t) (coeffs.g_cr * (1<<12) + (coeffs.g_cr > 0 ? 0.5 : -0.5));
+  int32_t b_cb = (int32_t) (coeffs.b_cb * (1<<12) + (coeffs.b_cb > 0 ? 0.5 : -0.5));
 
   int x, y;
   for (y = 0; y < height; y++) {
@@ -535,9 +535,9 @@ Op_YCbCr_to_RGB<Pixel>::convert_colorspace(const std::shared_ptr<const HeifPixel
         cr = in_cr[cy * in_cr_stride + cx] - halfRange;
 
         if (full_range_flag) {
-          yv = yv << 14;
+          yv = yv << 12;
         } else {
-          yv = (yv - 16) * (int32_t) (1.1689f * (1 << 14));
+          yv = (yv - 16) * (int32_t) (1.1689f * (1 << 12) + 0.5);
         }
 
         out_r[y * out_r_stride + x] = (Pixel) clip_int_u16(yv + r_cr * cr, fullRange);
