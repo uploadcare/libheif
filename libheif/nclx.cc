@@ -422,12 +422,18 @@ Error Box_colr::parse(BitstreamRange& range, const heif_security_limits* limits)
                    heif_suberror_End_of_data);
     }
 
+    MemoryHandle memory_handle;
+    if (auto err = memory_handle.alloc(profile_size, limits, "colr ICC profile")) {
+      return err;
+    }
+
     std::vector<uint8_t> rawData(profile_size);
     for (size_t i = 0; i < profile_size; i++) {
       rawData[i] = range.read8();
     }
 
-    m_color_profile = std::make_shared<color_profile_raw>(colour_type, rawData);
+    m_color_profile = std::make_shared<color_profile_raw>(colour_type, std::move(rawData),
+                                                        std::move(memory_handle));
   }
   else {
     return Error(heif_error_Invalid_input,

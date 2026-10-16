@@ -27,6 +27,7 @@
 #include "catch_amalgamated.hpp"
 #include "box.h"
 #include "codecs/avif_boxes.h"
+#include "nclx.h"
 #include "security_limits.h"
 #include "sequences/seq_boxes.h"
 
@@ -41,7 +42,8 @@ std::vector<uint8_t> make_box(const std::string& kind, uint32_t count)
 {
   StreamWriter writer;
   writer.write32(0);
-  writer.write32(fourcc(kind.substr(0, 4).c_str()));
+  const bool is_icc = kind == "prof" || kind == "rICC";
+  writer.write32(is_icc ? fourcc("colr") : fourcc(kind.substr(0, 4).c_str()));
 
   if (kind == "elst0" || kind == "elst1") {
     writer.write32(kind == "elst1" ? 0x01000000 : 0);
@@ -62,6 +64,9 @@ std::vector<uint8_t> make_box(const std::string& kind, uint32_t count)
   else {
     if (kind == "av1C") {
       writer.write32(0x81000000);
+    }
+    else if (is_icc) {
+      writer.write32(fourcc(kind.c_str()));
     }
     for (uint32_t i = 0; i < count; i++) {
       writer.write8(static_cast<uint8_t>(i));
@@ -92,7 +97,7 @@ Error parse_box(const std::vector<uint8_t>& data, const heif_security_limits* li
 
 TEST_CASE("box payload allocations respect block and total memory limits")
 {
-  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1");
+  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC");
   INFO("box: " << kind);
   const auto data = make_box(kind, 32);
   const size_t amount = allocation_size(kind, 32);
@@ -161,7 +166,7 @@ TEST_CASE("box payload allocations respect block and total memory limits")
 
 TEST_CASE("parsed box storage remains charged until the box is destroyed")
 {
-  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1");
+  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC");
   INFO("box: " << kind);
   const auto data = make_box(kind, 32);
   const size_t amount = allocation_size(kind, 32);
@@ -184,7 +189,7 @@ TEST_CASE("parsed box storage remains charged until the box is destroyed")
 
 TEST_CASE("empty box payloads fit a minimal memory budget")
 {
-  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1");
+  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC");
   INFO("box: " << kind);
   heif_security_limits limits = *heif_get_global_security_limits();
   limits.max_memory_block_size = 1;
@@ -209,4 +214,80 @@ TEST_CASE("truncated edit lists fail before reserving their declared storage")
   REQUIRE(err.error_code == heif_error_Invalid_input);
   REQUIRE(err.sub_error_code == heif_suberror_End_of_data);
   REQUIRE(tracker.get_max_total_memory_used() == 0);
+}
+
+
+TEST_CASE("ICC profile size limits remain independent of memory limits")
+{
+  const std::string kind = GENERATE("prof", "rICC");
+  const auto data = make_box(kind, 32);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 0;
+  limits.max_total_memory = 0;
+  limits.max_color_profile_size = 31;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+
+  Error err = parse_box(data, &limits, box);
+  REQUIRE(err.error_code == heif_error_Invalid_input);
+  REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  REQUIRE(err.message == "Color profile exceeds maximum supported size");
+
+  limits.max_color_profile_size = 32;
+  limits.max_memory_block_size = 32;
+  limits.max_total_memory = 32;
+  REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+
+  box.reset();
+  limits.max_color_profile_size = 0;
+  REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+}
+
+
+TEST_CASE("shared ICC storage stays charged after its colr box is destroyed")
+{
+  const std::string kind = GENERATE("prof", "rICC");
+  const auto data = make_box(kind, 32);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 32;
+  limits.max_total_memory = 32;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+
+  REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+  auto colr = std::dynamic_pointer_cast<Box_colr>(box);
+  REQUIRE(colr);
+  auto profile = colr->get_color_profile();
+  colr.reset();
+  box.reset();
+
+  Error err = parse_box(data, &limits, box);
+  REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+  REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+
+  profile.reset();
+  REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+}
+
+
+TEST_CASE("nclx parsing does not consume the ICC payload budget")
+{
+  StreamWriter writer;
+  writer.write32(19);
+  writer.write32(fourcc("colr"));
+  writer.write32(fourcc("nclx"));
+  writer.write16(1);
+  writer.write16(1);
+  writer.write16(1);
+  writer.write8(0x80);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 1;
+  limits.max_total_memory = 1;
+  limits.max_color_profile_size = 1;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  REQUIRE(parse_box(writer.get_data(), &limits, box) == Error::Ok);
+  StreamWriter output;
+  REQUIRE(box->write(output) == Error::Ok);
+  REQUIRE(output.get_data() == writer.get_data());
 }

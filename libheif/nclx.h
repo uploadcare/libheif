@@ -22,10 +22,12 @@
 #define LIBHEIF_NCLX_H
 
 #include "box.h"
+#include "security_limits.h"
 
 #include <cinttypes>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct primaries
@@ -104,6 +106,9 @@ public:
   color_profile_raw(uint32_t type, const std::vector<uint8_t>& data)
       : m_type(type), m_data(data) {}
 
+  color_profile_raw(uint32_t type, std::vector<uint8_t>&& data, MemoryHandle&& memory_handle)
+      : m_type(type), m_memory_handle(std::move(memory_handle)), m_data(std::move(data)) {}
+
   uint32_t get_type() const override { return m_type; }
 
   const std::vector<uint8_t>& get_data() const { return m_data; }
@@ -114,6 +119,7 @@ public:
 
 private:
   uint32_t m_type;
+  MemoryHandle m_memory_handle;
   std::vector<uint8_t> m_data;
 };
 
