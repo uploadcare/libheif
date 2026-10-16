@@ -71,6 +71,10 @@ Error Box_jpgC::parse(BitstreamRange& range, const heif_security_limits* limits)
     return Error{heif_error_Invalid_input, heif_suberror_Unspecified, "jpgC block exceeds maximum size"};
   }
 
+  if (auto err = m_memory_handle.alloc(nBytes, limits, "jpgC box payload")) {
+    return err;
+  }
+
   m_data.resize(nBytes);
   range.read(m_data.data(), nBytes);
   return range.get_error();

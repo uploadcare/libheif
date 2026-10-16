@@ -111,6 +111,7 @@ protected:
 private:
   configuration m_configuration;
 
+  MemoryHandle m_memory_handle;
   std::vector<uint8_t> m_config_OBUs;
 };
 

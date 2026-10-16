@@ -1053,6 +1053,7 @@ public:
   void derive_box_version() override;
 
 private:
+  MemoryHandle m_memory_handle;
   std::vector<Entry> m_entries;
 };
 
