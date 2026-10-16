@@ -27,7 +27,11 @@
 #include "catch_amalgamated.hpp"
 #include "box.h"
 #include "codecs/avif_boxes.h"
+#include "codecs/avc_boxes.h"
 #include "codecs/hevc_boxes.h"
+#include "codecs/vvc_boxes.h"
+#include "mini.h"
+#include "file.h"
 #include "nclx.h"
 #include "security_limits.h"
 #include "sequences/seq_boxes.h"
@@ -43,6 +47,32 @@ namespace {
 
 std::vector<uint8_t> make_box(const std::string& kind, uint32_t count)
 {
+  if (kind == "avcS" || kind == "avcP" || kind == "avcE" || kind == "vvcC") {
+    std::vector<uint8_t> nal(count, 0x08);
+    StreamWriter writer;
+    if (kind == "vvcC") {
+      Box_vvcC box;
+      auto& config = box.get_configuration();
+      config.native_ptl.num_bytes_constraint_info = 1;
+      config.native_ptl.general_constraint_info = {0};
+      if (count) box.append_nal_data(nal);
+      REQUIRE(box.write(writer) == Error::Ok);
+    }
+    else {
+      Box_avcC box;
+      box.get_configuration().configuration_version = 1;
+      box.get_configuration().AVCProfileIndication = kind == "avcE" ? 100 : 66;
+      box.get_configuration().lengthSize = 4;
+      if (count) {
+        if (kind == "avcS") box.append_sps_nal(nal.data(), nal.size());
+        if (kind == "avcP") box.append_pps_nal(nal.data(), nal.size());
+        if (kind == "avcE") box.append_sps_ext_nal(nal.data(), nal.size());
+      }
+      REQUIRE(box.write(writer) == Error::Ok);
+    }
+    return writer.get_data();
+  }
+
   StreamWriter writer;
   writer.write32(0);
   const bool is_icc = kind == "prof" || kind == "rICC";
@@ -103,6 +133,35 @@ size_t allocation_size(const std::string& kind, uint32_t count)
   return (kind == "elst0" || kind == "elst1") ? count * sizeof(Box_elst::Entry) : count;
 }
 
+std::vector<uint8_t> make_mini(bool inherited_configs, bool hdr = true)
+{
+  Box_mini mini;
+  mini.set_orientation(1);
+  mini.set_width(16);
+  mini.set_height(16);
+  mini.set_chroma_subsampling(3);
+  mini.set_alpha_flag(hdr);
+  mini.set_hdr_flag(hdr);
+  mini.set_gainmap_flag(hdr);
+  mini.set_gainmap_width(16);
+  mini.set_gainmap_height(16);
+  mini.set_gainmap_chroma_subsampling(3);
+  mini.set_icc_flag(true);
+  mini.set_tmap_icc_flag(true);
+  mini.set_main_item_codec_config({0x81, 0, 0, 0});
+  mini.set_alpha_item_codec_config({0x81, static_cast<uint8_t>(inherited_configs ? 0 : 1), 0, 0});
+  mini.set_gainmap_item_codec_config({0x81, static_cast<uint8_t>(inherited_configs ? 0 : 2), 0, 0});
+  mini.set_icc_data(std::vector<uint8_t>(32, 0xAA));
+  mini.set_tmap_icc_data(std::vector<uint8_t>(24, 0xBB));
+  mini.set_gainmap_metadata(std::vector<uint8_t>(16, 0xCC));
+  mini.set_main_item_data({0});
+  mini.set_alpha_item_data({0});
+  mini.set_gainmap_item_data({0});
+  StreamWriter writer;
+  REQUIRE(mini.write(writer) == Error::Ok);
+  return writer.get_data();
+}
+
 Error parse_box(const std::vector<uint8_t>& data, const heif_security_limits* limits,
                 std::shared_ptr<Box>& box)
 {
@@ -116,7 +175,8 @@ Error parse_box(const std::vector<uint8_t>& data, const heif_security_limits* li
 
 TEST_CASE("box payload allocations respect block and total memory limits")
 {
-  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC");
+  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC",
+                                    "avcS", "avcP", "avcE", "vvcC");
   INFO("box: " << kind);
   const auto data = make_box(kind, 32);
   const size_t amount = allocation_size(kind, 32);
@@ -185,7 +245,8 @@ TEST_CASE("box payload allocations respect block and total memory limits")
 
 TEST_CASE("parsed box storage remains charged until the box is destroyed")
 {
-  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC");
+  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC",
+                                    "avcS", "avcP", "avcE", "vvcC");
   INFO("box: " << kind);
   const auto data = make_box(kind, 32);
   const size_t amount = allocation_size(kind, 32);
@@ -208,7 +269,8 @@ TEST_CASE("parsed box storage remains charged until the box is destroyed")
 
 TEST_CASE("empty box payloads fit a minimal memory budget")
 {
-  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC");
+  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC",
+                                    "avcS", "avcP", "avcE", "vvcC");
   INFO("box: " << kind);
   heif_security_limits limits = *heif_get_global_security_limits();
   limits.max_memory_block_size = 1;
@@ -361,4 +423,160 @@ TEST_CASE("truncated hvcC NAL payloads fail before reserving storage")
   REQUIRE(err.error_code == heif_error_Invalid_input);
   REQUIRE(err.sub_error_code == heif_suberror_End_of_data);
   REQUIRE(tracker.get_max_total_memory_used() == 0);
+}
+
+
+TEST_CASE("mini retained payloads share the budget with the parsing buffer")
+{
+  const bool inherited_configs = GENERATE(false, true);
+  const auto data = make_mini(inherited_configs);
+  const size_t retained = 3 * 4 + 32 + 24 + 16;
+  const size_t peak = data.size() - 8 + retained;
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = data.size();
+  limits.max_total_memory = peak;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+
+  SECTION("exact peak budget accepts all payloads and preserves serialization") {
+    REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+    auto mini = std::dynamic_pointer_cast<Box_mini>(box);
+    REQUIRE(mini);
+    // Parsing keeps image offsets rather than image bytes; restore the write-only data.
+    mini->set_main_item_data({0});
+    mini->set_alpha_item_data({0});
+    mini->set_gainmap_item_data({0});
+    StreamWriter writer;
+    REQUIRE(box->write(writer) == Error::Ok);
+    REQUIRE(writer.get_data() == data);
+
+    // The temporary parsing buffer is gone, but every retained byte is still charged.
+    limits.max_total_memory = retained;
+    MemoryHandle probe;
+    Error err = probe.alloc(1, &limits, "budget probe");
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    mini.reset();
+    box.reset();
+    REQUIRE(probe.alloc(1, &limits, "budget probe") == Error::Ok);
+  }
+
+  SECTION("one byte below peak rejects and releases the failed parse") {
+    limits.max_total_memory = peak - 1;
+    Error err = parse_box(data, &limits, box);
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    box.reset();
+    limits.max_total_memory = 1;
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(1, &limits, "budget probe") == Error::Ok);
+  }
+
+  SECTION("disabled limits accept retained payloads") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = 0;
+    REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+  }
+}
+
+
+TEST_CASE("expanded mini ICC storage remains charged after the file is destroyed")
+{
+  const auto mini_data = make_mini(true, false);
+  StreamWriter writer;
+  Box_ftyp ftyp;
+  ftyp.set_major_brand(heif_brand2_mif3);
+  ftyp.set_minor_version(heif_brand2_avif);
+  REQUIRE(ftyp.write(writer) == Error::Ok);
+  writer.write(mini_data);
+  const auto data = writer.get_data();
+
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 1024;
+  limits.max_total_memory = 1024;
+  TotalMemoryTracker tracker(&limits);
+  auto file = std::make_shared<HeifFile>();
+  file->set_security_limits(&limits);
+  REQUIRE(file->read_from_memory(data.data(), data.size(), false) == Error::Ok);
+
+  std::shared_ptr<const color_profile> profile;
+  for (const auto& colr : file->get_ipco_box()->get_child_boxes<Box_colr>()) {
+    if (colr->get_color_profile()->get_type() == fourcc("prof")) {
+      profile = colr->get_color_profile();
+    }
+  }
+  REQUIRE(profile);
+  REQUIRE(std::dynamic_pointer_cast<const color_profile_raw>(profile)->get_data() ==
+          std::vector<uint8_t>(32, 0xAA));
+  file.reset();
+
+  limits.max_total_memory = 32;
+  MemoryHandle probe;
+  Error err = probe.alloc(1, &limits, "budget probe");
+  REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+  REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  profile.reset();
+  REQUIRE(probe.alloc(1, &limits, "budget probe") == Error::Ok);
+}
+
+
+TEST_CASE("AVC and VVC reject truncated payloads before reserving storage")
+{
+  const std::string kind = GENERATE("avcS", "avcP", "avcE", "vvcC");
+  auto data = make_box(kind, 32);
+  // Declare more than the remaining bytes, including AVC's trailing PPS count.
+  const size_t length_offset = kind == "avcS" ? 15 : kind == "avcP" ? 16 : kind == "avcE" ? 20 : data.size() - 33;
+  data[length_offset] = 34;
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 1;
+  limits.max_total_memory = 1;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  Error err = parse_box(data, &limits, box);
+  REQUIRE(err.error_code == heif_error_Invalid_input);
+  REQUIRE(err.sub_error_code == heif_suberror_End_of_data);
+  REQUIRE(tracker.get_max_total_memory_used() == 0);
+}
+
+
+TEST_CASE("AVC and VVC accumulate all payloads within one box")
+{
+  const bool vvc = GENERATE(false, true);
+  std::vector<uint8_t> nal(32, 0x08);
+  StreamWriter writer;
+  if (vvc) {
+    Box_vvcC box;
+    box.get_configuration().native_ptl.num_bytes_constraint_info = 1;
+    box.get_configuration().native_ptl.general_constraint_info = {0};
+    box.append_nal_data(nal);
+    box.append_nal_data(nal);
+    nal[1] = 0x10;
+    box.append_nal_data(nal);
+    REQUIRE(box.write(writer) == Error::Ok);
+  }
+  else {
+    Box_avcC box;
+    box.get_configuration().configuration_version = 1;
+    box.get_configuration().AVCProfileIndication = 100;
+    box.get_configuration().lengthSize = 4;
+    box.append_sps_nal(nal.data(), nal.size());
+    box.append_pps_nal(nal.data(), nal.size());
+    box.append_sps_ext_nal(nal.data(), nal.size());
+    REQUIRE(box.write(writer) == Error::Ok);
+  }
+  const auto data = writer.get_data();
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 32;
+  limits.max_total_memory = 96;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+  box.reset();
+  limits.max_total_memory = 95;
+  Error err = parse_box(data, &limits, box);
+  REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+  REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  box.reset();
+  limits.max_total_memory = 96;
+  REQUIRE(parse_box(data, &limits, box) == Error::Ok);
 }

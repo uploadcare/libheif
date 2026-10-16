@@ -22,6 +22,7 @@
 #define LIBHEIF_VVC_BOXES_H
 
 #include "box.h"
+#include "security_limits.h"
 #include <string>
 #include <vector>
 #include "image-items/image_item.h"
@@ -103,6 +104,7 @@ private:
       std::vector<std::vector<uint8_t> > m_nal_units; // only one NAL item for DCI and OPI
     };
 
+  MemoryHandle m_memory_handle;
   configuration m_configuration;
   std::vector<NalArray> m_nal_array;
 };
