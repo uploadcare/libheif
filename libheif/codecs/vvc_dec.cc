@@ -28,9 +28,16 @@
 #include <string>
 
 
-Result<std::vector<uint8_t>> Decoder_VVC::read_bitstream_configuration_data() const
+Result<std::vector<uint8_t>> Decoder_VVC::read_bitstream_configuration_data(MemoryHandle* memory_handle,
+                                                                                 const heif_security_limits* limits) const
 {
   std::vector<uint8_t> data;
+  if (memory_handle) {
+    if (Error err = m_vvcC->get_headers(data, *memory_handle, limits)) {
+      return err;
+    }
+    return data;
+  }
   if (!m_vvcC->get_headers(&data)) {
     return Error{heif_error_Invalid_input,
                  heif_suberror_No_item_data};

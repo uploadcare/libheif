@@ -71,7 +71,8 @@ public:
 
   bool has_alpha_component() const;
 
-  Result<std::vector<uint8_t>> read_bitstream_configuration_data() const override;
+  Result<std::vector<uint8_t>> read_bitstream_configuration_data(MemoryHandle* memory_handle = nullptr,
+                                                                const heif_security_limits* limits = nullptr) const override;
 
   Result<std::shared_ptr<HeifPixelImage>>
   decode_single_frame_from_compressed_data(const struct heif_decoding_options& options,

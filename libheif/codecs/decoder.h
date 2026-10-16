@@ -122,7 +122,8 @@ public:
   // --- raw data access
 
   // Returns a stream of packets. Each packet is starts with a 4-byte size (MSB first).
-  [[nodiscard]] virtual Result<std::vector<uint8_t>> read_bitstream_configuration_data() const = 0;
+  [[nodiscard]] virtual Result<std::vector<uint8_t>> read_bitstream_configuration_data(MemoryHandle* memory_handle = nullptr,
+                                                                               const heif_security_limits* limits = nullptr) const = 0;
 
   // Returns the largest *coded* picture size declared anywhere in `compressed_data`
   // (the exact buffer that will be pushed to the decoder), i.e. the buffer
@@ -174,8 +175,15 @@ public:
     return Error::Ok;
   }
 
-  Result<std::vector<uint8_t>> get_compressed_data(bool with_configuration_NALs,
-                                                   size_t* out_configuration_data_size = nullptr) const;
+  // Returns the extent cache when no configuration bytes are needed, otherwise
+  // the caller-owned assembled buffer. Keep the extent or assembled buffer and
+  // its reservation alive until the returned data is no longer used. Pass an
+  // empty assembled buffer and a fresh memory handle.
+  Result<const std::vector<uint8_t>*> get_compressed_data(bool with_configuration_NALs,
+                                                         std::vector<uint8_t>& assembled_data,
+                                                         MemoryHandle& memory_handle,
+                                                         const heif_security_limits* limits = nullptr,
+                                                         size_t* out_configuration_data_size = nullptr) const;
 
   // --- decoding
 

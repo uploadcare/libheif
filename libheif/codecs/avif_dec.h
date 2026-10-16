@@ -44,7 +44,8 @@ public:
 
   Error get_coded_image_colorspace(heif_colorspace*, heif_chroma*) const override;
 
-  Result<std::vector<uint8_t>> read_bitstream_configuration_data() const override;
+  Result<std::vector<uint8_t>> read_bitstream_configuration_data(MemoryHandle* memory_handle = nullptr,
+                                                                const heif_security_limits* limits = nullptr) const override;
 
   Error prepare_compressed_data_for_decoding(std::vector<uint8_t>& compressed_data,
                                              size_t configuration_data_size) const override;

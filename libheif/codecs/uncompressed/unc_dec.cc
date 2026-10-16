@@ -42,7 +42,8 @@ Decoder_uncompressed::Decoder_uncompressed(std::shared_ptr<Box_uncC> uncC,
 }
 
 
-Result<std::vector<uint8_t>> Decoder_uncompressed::read_bitstream_configuration_data() const
+Result<std::vector<uint8_t>> Decoder_uncompressed::read_bitstream_configuration_data(MemoryHandle*,
+                                                                                 const heif_security_limits*) const
 {
   return std::vector<uint8_t>{};
 }

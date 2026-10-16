@@ -1,5 +1,5 @@
 /*
-  libheif box memory-limit tests
+  libheif memory-limit tests
 
   MIT License
 
@@ -31,6 +31,13 @@
 #include "codecs/hevc_boxes.h"
 #include "codecs/vvc_boxes.h"
 #include "codecs/decoder.h"
+#include "codecs/avc_dec.h"
+#include "codecs/avif_dec.h"
+#include "codecs/hevc_dec.h"
+#include "codecs/jpeg_dec.h"
+#include "codecs/jpeg_boxes.h"
+#include "codecs/jpeg2000_dec.h"
+#include "codecs/vvc_dec.h"
 #if WITH_UNCOMPRESSED_CODEC
 #include "codecs/uncompressed/unc_decoder.h"
 #endif
@@ -603,6 +610,147 @@ TEST_CASE("iloc rejects an exhausted total budget before copying item data")
 }
 
 
+TEST_CASE("decoder input assembly accounts configuration and cached data together")
+{
+  const std::string kind = GENERATE("jpgC", "hvcC", "avcS", "avcP", "avcE", "vvcC", "av1C");
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 64;
+  const size_t header_size = (kind == "jpgC" || kind == "av1C") ? 16 : 20;
+  const size_t combined_size = header_size + 32;
+  limits.max_total_memory = 16 + 32 + combined_size;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  REQUIRE(parse_box(make_box(kind, 16), &limits, box) == Error::Ok);
+  std::shared_ptr<Decoder> decoder;
+  if (kind == "jpgC") decoder = std::make_shared<Decoder_JPEG>(std::dynamic_pointer_cast<Box_jpgC>(box));
+  if (kind == "hvcC") decoder = std::make_shared<Decoder_HEVC>(std::dynamic_pointer_cast<Box_hvcC>(box));
+  if (kind == "avcS" || kind == "avcP" || kind == "avcE") decoder = std::make_shared<Decoder_AVC>(std::dynamic_pointer_cast<Box_avcC>(box));
+  if (kind == "vvcC") decoder = std::make_shared<Decoder_VVC>(std::dynamic_pointer_cast<Box_vvcC>(box));
+  if (kind == "av1C") decoder = std::make_shared<Decoder_AVIF>(std::dynamic_pointer_cast<Box_av1C>(box));
+  REQUIRE(decoder);
+  auto file = std::make_shared<HeifFile>();
+  file->set_security_limits(&limits);
+  DataExtent extent;
+  extent.m_file = file;
+  REQUIRE(extent.m_raw_memory_handle.alloc(32, &limits, "test cached input") == Error::Ok);
+  extent.m_raw.assign(32, 0xAA);
+  decoder->set_data_extent(std::move(extent));
+  auto headers = decoder->read_bitstream_configuration_data();
+  REQUIRE(headers);
+  REQUIRE(headers->size() == header_size);
+
+  SECTION("exact budgets retain the assembled output until its owner is destroyed") {
+    limits.max_memory_block_size = combined_size;
+    {
+      MemoryHandle owner;
+      std::vector<uint8_t> assembled;
+      auto result = decoder->get_compressed_data(true, assembled, owner);
+      REQUIRE(result);
+      REQUIRE(*result == &assembled);
+      std::vector<uint8_t> expected = *headers;
+      expected.insert(expected.end(), 32, 0xAA);
+      REQUIRE(**result == expected);
+      REQUIRE(decoder->get_data_extent().m_raw == std::vector<uint8_t>(32, 0xAA));
+      MemoryHandle probe;
+      REQUIRE(probe.alloc(1, &limits, "retained assembly") != Error::Ok);
+    }
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(combined_size, &limits, "released assembly") == Error::Ok);
+  }
+
+  SECTION("complete assembled size must fit the block limit") {
+    limits.max_memory_block_size = combined_size - 1;
+    MemoryHandle owner;
+    std::vector<uint8_t> assembled;
+    auto result = decoder->get_compressed_data(true, assembled, owner);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+    REQUIRE(assembled == *headers);
+  }
+
+  SECTION("assembly and original storage must fit the total budget concurrently") {
+    limits.max_total_memory--;
+    {
+      MemoryHandle owner;
+      std::vector<uint8_t> assembled;
+      auto result = decoder->get_compressed_data(true, assembled, owner);
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+      REQUIRE(assembled == *headers);
+    }
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(combined_size - 1, &limits, "released failed assembly") == Error::Ok);
+  }
+
+  SECTION("configuration is rejected before copying when its budget is exhausted") {
+    limits.max_total_memory = 48 + header_size - 1;
+    MemoryHandle owner;
+    std::vector<uint8_t> assembled;
+    auto result = decoder->get_compressed_data(true, assembled, owner);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+    REQUIRE(assembled.empty());
+  }
+
+  SECTION("configuration including length prefixes must fit the block limit") {
+    limits.max_memory_block_size = header_size - 1;
+    MemoryHandle owner;
+    std::vector<uint8_t> assembled;
+    auto result = decoder->get_compressed_data(true, assembled, owner);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+    REQUIRE(assembled.empty());
+  }
+
+  SECTION("frames without configuration borrow the cache even with no spare budget") {
+    limits.max_total_memory = 48;
+    MemoryHandle owner;
+    std::vector<uint8_t> assembled;
+    auto result = decoder->get_compressed_data(false, assembled, owner);
+    REQUIRE(result);
+    REQUIRE(*result == &decoder->get_data_extent().m_raw);
+    REQUIRE(assembled.empty());
+  }
+
+  SECTION("disabled limits allow assembly") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = 0;
+    MemoryHandle owner;
+    std::vector<uint8_t> assembled;
+    auto result = decoder->get_compressed_data(true, assembled, owner);
+    REQUIRE(result);
+    REQUIRE((*result)->size() == combined_size);
+  }
+}
+
+TEST_CASE("empty decoder configuration borrows cached input without another allocation")
+{
+  const std::string kind = GENERATE("JPEG", "JPEG2000", "AV1");
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 32;
+  limits.max_total_memory = 32;
+  TotalMemoryTracker tracker(&limits);
+  auto file = std::make_shared<HeifFile>();
+  file->set_security_limits(&limits);
+  std::shared_ptr<Decoder> decoder;
+  if (kind == "JPEG") decoder = std::make_shared<Decoder_JPEG>(nullptr);
+  if (kind == "JPEG2000") decoder = std::make_shared<Decoder_JPEG2000>(nullptr);
+  if (kind == "AV1") decoder = std::make_shared<Decoder_AVIF>(std::make_shared<Box_av1C>());
+  REQUIRE(decoder);
+  DataExtent extent;
+  extent.m_file = file;
+  REQUIRE(extent.m_raw_memory_handle.alloc(32, &limits, "test cached input") == Error::Ok);
+  extent.m_raw.assign(32, 0xAA);
+  decoder->set_data_extent(std::move(extent));
+  MemoryHandle owner;
+  std::vector<uint8_t> assembled;
+  auto result = decoder->get_compressed_data(true, assembled, owner);
+  REQUIRE(result);
+  REQUIRE(*result == &decoder->get_data_extent().m_raw);
+  REQUIRE(**result == std::vector<uint8_t>(32, 0xAA));
+  REQUIRE(assembled.empty());
+}
+
 TEST_CASE("metadata and cached decoder input respect the remaining context budget")
 {
   heif_security_limits limits = *heif_get_global_security_limits();
@@ -792,6 +940,19 @@ TEST_CASE("unci assembled units enforce complete block and concurrent total budg
   REQUIRE(extent.m_raw_memory_handle.alloc(21, &limits, "test compressed input") == Error::Ok);
   extent.m_raw = {0x01, 0x10, 0x00, 0xEF, 0xFF};
   extent.m_raw.insert(extent.m_raw.end(), 16, 0xAA);
+
+  if (whole_item) {
+    SECTION("three units keep output capacity within the complete block budget") {
+      units->add_component({0, 21});
+      limits.max_memory_block_size = 48;
+      limits.max_total_memory = 256;
+      MemoryHandle owner;
+      auto result = decoder.decompress_whole_item(extent, properties, 48, owner);
+      REQUIRE(result);
+      REQUIRE(*result == std::vector<uint8_t>(48, 0xAA));
+      REQUIRE(result->capacity() <= limits.max_memory_block_size);
+    }
+  }
 
   SECTION("exact peak budget succeeds and output stays charged until destruction") {
     {

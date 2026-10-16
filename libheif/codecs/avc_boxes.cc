@@ -270,6 +270,28 @@ std::string Box_avcC::profileIndicationAsText() const
 }
 
 
+Error Box_avcC::get_header_nals(std::vector<uint8_t>& data, MemoryHandle& memory_handle,
+                                        const heif_security_limits* limits) const
+{
+  size_t size = 0;
+  for (const auto* units : {&m_sps, &m_sps_ext, &m_pps}) {
+    for (const auto& unit : *units) {
+      if (size > data.max_size() - 4 || unit.size() > data.max_size() - size - 4) {
+        return Error{heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+                     "Decoder configuration size exceeds the vector size limit"};
+      }
+      size += 4 + unit.size();
+    }
+  }
+  if (Error err = memory_handle.alloc(size, limits, "AVC decoder configuration")) {
+    return err;
+  }
+  data.reserve(size);
+  get_header_nals(data);
+  return Error::Ok;
+}
+
+
 void Box_avcC::get_header_nals(std::vector<uint8_t>& data) const
 {
   for (const auto& sps : m_sps) {

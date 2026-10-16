@@ -111,6 +111,8 @@ public:
   const char* debug_box_name() const override { return "HEVC Configuration Item"; }
 
   bool get_header_nals(std::vector<uint8_t>* dest) const;
+  Error get_header_nals(std::vector<uint8_t>& data, MemoryHandle& memory_handle,
+                         const heif_security_limits* limits) const;
 
   void set_configuration(const HEVCDecoderConfigurationRecord& config) { m_configuration = config; }
 
