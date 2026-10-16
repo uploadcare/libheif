@@ -24,6 +24,7 @@
 #include "libheif/heif.h"
 #include "box.h"
 #include "error.h"
+#include "security_limits.h"
 
 #include <memory>
 #include <string>
@@ -77,7 +78,7 @@ struct HEVCDecoderConfigurationRecord
 
   std::vector<NalArray> m_nal_array;
 
-  Error parse(BitstreamRange& range, const heif_security_limits* limits);
+  Error parse(BitstreamRange& range, const heif_security_limits* limits, MemoryHandle& memory_handle);
 
   Error write(StreamWriter& writer) const;
 
@@ -131,6 +132,7 @@ protected:
   Error parse(BitstreamRange& range, const heif_security_limits* limits) override;
 
 private:
+  MemoryHandle m_memory_handle;
   HEVCDecoderConfigurationRecord m_configuration;
 };
 
