@@ -55,7 +55,6 @@ public:
   std::string item_type;  // e.g. "Exif"
   std::string content_type;
   std::string item_uri_type;
-  std::vector<uint8_t> m_data;
 
   // Accounts m_data against the context's total-memory budget for the lifetime of
   // this metadata object. Metadata items may be (brotli/zlib) compressed and are
@@ -64,6 +63,7 @@ public:
   // security limits (GHSA-24wx-9w62-c96w). MemoryHandle is move-only, which makes
   // ImageMetadata move-only; it is only ever held via shared_ptr, so that is fine.
   MemoryHandle m_memory_handle;
+  std::vector<uint8_t> m_data;
 
 private:
   std::shared_ptr<HeifFile> m_source;

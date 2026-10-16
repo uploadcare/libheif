@@ -51,14 +51,15 @@ Result<std::string_view> TextItem::get_item_text(size_t max_output_size)
   std::lock_guard<std::mutex> lock(m_load_mutex);
 
   if (m_source) {
-    auto data_result = m_source->get_uncompressed_item_data(m_item_id, max_output_size);
+    MemoryHandle memory_handle;
+    auto data_result = m_source->get_uncompressed_item_data(m_item_id, &memory_handle, max_output_size);
     if (!data_result) {
       return data_result.error();
     }
 
-    if (Error err = parse(std::move(*data_result), m_source->get_security_limits())) {
-      return err;
-    }
+    m_data = std::move(*data_result);
+    m_memory_handle = std::move(memory_handle);
+    m_source.reset();
   }
 
   if (m_data.size() > max_output_size) {

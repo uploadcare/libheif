@@ -1825,9 +1825,10 @@ Error Box_iloc::read_data(heif_item_id item,
                           const std::shared_ptr<StreamReader>& istr,
                           const std::shared_ptr<Box_idat>& idat,
                           std::vector<uint8_t>* dest,
-                          const heif_security_limits* limits) const
+                          const heif_security_limits* limits,
+                          MemoryHandle* memory_handle) const
 {
-  return read_data(item, istr, idat, dest, 0, std::numeric_limits<uint64_t>::max(), limits);
+  return read_data(item, istr, idat, dest, 0, std::numeric_limits<uint64_t>::max(), limits, memory_handle);
 }
 
 
@@ -1836,7 +1837,8 @@ Error Box_iloc::read_data(heif_item_id item_id,
                           const std::shared_ptr<Box_idat>& idat,
                           std::vector<uint8_t>* dest,
                           uint64_t offset, uint64_t size,
-                          const heif_security_limits* limits) const
+                          const heif_security_limits* limits,
+                          MemoryHandle* memory_handle) const
 {
   const Item* item = nullptr;
   for (auto& i : m_items) {
@@ -1862,6 +1864,20 @@ Error Box_iloc::read_data(heif_item_id item_id,
 #endif
 
   bool limited_size = (size != std::numeric_limits<uint64_t>::max());
+
+  MemoryHandle scoped_memory_handle;
+  auto& reservation = memory_handle ? *memory_handle : scoped_memory_handle;
+  auto reserve_payload = [&](uint64_t length) -> Error {
+    if (length > dest->max_size() - dest->size()) {
+      return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+              "iloc item data exceeds the maximum buffer size"};
+    }
+    if (limits->max_memory_block_size && dest->size() + length > limits->max_memory_block_size) {
+      return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+              "iloc item data exceeds the maximum memory block size"};
+    }
+    return reservation.alloc(static_cast<size_t>(length), limits, "iloc item data");
+  };
 
 
   // TODO: this function should always append the data to the output vector as this is used when
@@ -1893,6 +1909,9 @@ Error Box_iloc::read_data(heif_item_id item_id,
                 "iloc item data exceeds the maximum memory block size"};
       }
 
+      if (auto err = reserve_payload(read_len)) {
+        return err;
+      }
       dest->insert(dest->end(),
                    extent.data.begin() + static_cast<size_t>(skip_len),
                    extent.data.begin() + static_cast<size_t>(skip_len + read_len));
@@ -1993,6 +2012,9 @@ Error Box_iloc::read_data(heif_item_id item_id,
 
       // --- read data
 
+      if (auto err = reserve_payload(read_len)) {
+        return err;
+      }
       dest->resize(static_cast<size_t>(old_size + read_len));
       success = istr->read((char*) dest->data() + old_size, static_cast<size_t>(read_len));
       if (!success) {
@@ -2030,6 +2052,9 @@ Error Box_iloc::read_data(heif_item_id item_id,
         continue;
       }
 
+      if (auto err = reserve_payload(read_len)) {
+        return err;
+      }
       Error err = idat->read_data(istr,
                                   extent.offset + item->base_offset + skip_len,
                                   read_len,

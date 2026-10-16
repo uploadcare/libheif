@@ -29,6 +29,10 @@
 #include <libheif/heif_uncompressed.h>
 
 struct heif_security_limits;
+class MemoryHandle;
+
+// Decompressors charge output growth to memory_handle when supplied. The caller
+// must keep that handle alive until the returned buffer is destroyed.
 
 // Counts bytes produced by MIME metadata decompression across all reads of one
 // file, including unsuccessful and repeated reads. Uncompressed image (unci)
@@ -125,6 +129,7 @@ std::vector<uint8_t> compress_deflate(const uint8_t* input, size_t size);
 Result<std::vector<uint8_t>> decompress_zlib(const std::vector<uint8_t>& compressed_input,
                                              const heif_security_limits* limits,
                                              uint64_t max_output_size = UINT64_MAX,
+                                             MemoryHandle* memory_handle = nullptr,
                                              MetadataDecompressionBudget* work_budget = nullptr);
 
 /**
@@ -145,6 +150,7 @@ Result<std::vector<uint8_t>> decompress_zlib(const std::vector<uint8_t>& compres
 Result<std::vector<uint8_t>> decompress_deflate(const std::vector<uint8_t>& compressed_input,
                                                 const heif_security_limits* limits,
                                                 uint64_t max_output_size = UINT64_MAX,
+                                                MemoryHandle* memory_handle = nullptr,
                                                 MetadataDecompressionBudget* work_budget = nullptr);
 
 #endif
@@ -165,6 +171,7 @@ Result<std::vector<uint8_t>> decompress_deflate(const std::vector<uint8_t>& comp
 Result<std::vector<uint8_t>> decompress_brotli(const std::vector<uint8_t>& compressed_input,
                                                const heif_security_limits* limits,
                                                uint64_t max_output_size = UINT64_MAX,
+                                               MemoryHandle* memory_handle = nullptr,
                                                MetadataDecompressionBudget* work_budget = nullptr);
 
 std::vector<uint8_t> compress_brotli(const uint8_t* input, size_t size);

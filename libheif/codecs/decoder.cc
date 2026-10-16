@@ -72,18 +72,11 @@ Result<std::vector<uint8_t>*> DataExtent::read_data() const
     assert(m_file);
 
     // image
-    Error err = m_file->append_data_from_iloc(m_item_id, m_raw);
+    Error err = m_file->append_data_from_iloc(m_item_id, m_raw, &m_raw_memory_handle);
     if (err) {
+      std::vector<uint8_t>().swap(m_raw);
+      m_raw_memory_handle.free();
       return err;
-    }
-
-    // Account the (now-known) buffer size against the file's total-memory budget.
-    // append_data_from_iloc has already enforced max_memory_block_size per extent.
-    if (auto memErr = m_raw_memory_handle.alloc(m_raw.size(), m_file->get_security_limits(),
-                                                "decoder input buffer (iloc)")) {
-      m_raw.clear();
-      m_raw.shrink_to_fit();
-      return memErr;
     }
   }
   else {
@@ -100,6 +93,7 @@ Result<std::vector<uint8_t>*> DataExtent::read_data() const
     // file range
     Error err = m_file->append_data_from_file_range(m_raw, m_offset, m_size);
     if (err) {
+      std::vector<uint8_t>().swap(m_raw);
       m_raw_memory_handle.free();
       return err;
     }

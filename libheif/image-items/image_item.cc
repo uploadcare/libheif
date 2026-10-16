@@ -54,15 +54,10 @@ Error ImageMetadata::ensure_loaded(size_t max_output_size)
   std::lock_guard<std::mutex> lock(m_load_mutex);
 
   if (m_source) {
-    auto data_result = m_source->get_uncompressed_item_data(item_id, max_output_size);
+    MemoryHandle memory_handle;
+    auto data_result = m_source->get_uncompressed_item_data(item_id, &memory_handle, max_output_size);
     if (!data_result) {
       return data_result.error();
-    }
-
-    MemoryHandle memory_handle;
-    if (Error err = memory_handle.alloc(data_result->capacity(), m_source->get_security_limits(),
-                                        "decompressed item metadata")) {
-      return err;
     }
 
     m_data = std::move(*data_result);

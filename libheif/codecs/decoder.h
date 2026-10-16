@@ -72,11 +72,10 @@ struct DataExtent
   enum class Source : uint8_t { Raw, Image, FileRange } m_source = Source::Raw;
 
   // --- raw data
-  mutable std::vector<uint8_t> m_raw; // also for cached data
-
   // Holds m_raw's allocation against the file's max_total_memory budget.
   // Released when DataExtent is destroyed (or moved-from).
   mutable MemoryHandle m_raw_memory_handle;
+  mutable std::vector<uint8_t> m_raw; // also for cached data
 
   // --- image
   heif_item_id m_item_id = 0;
