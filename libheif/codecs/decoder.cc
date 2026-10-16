@@ -292,39 +292,46 @@ std::shared_ptr<Decoder> Decoder::alloc_for_sequence_sample_description_box(cons
 }
 
 
-Result<std::vector<uint8_t>> Decoder::get_compressed_data(bool with_configuration_NALs) const
+Result<const std::vector<uint8_t>*> Decoder::get_compressed_data(bool with_configuration_NALs,
+                                                                 std::vector<uint8_t>& assembled_data,
+                                                                 MemoryHandle& memory_handle,
+                                                                 const heif_security_limits* limits) const
 {
-  // --- get the compressed image data
+  if (!limits && m_data_extent.m_file) {
+    limits = m_data_extent.m_file->get_security_limits();
+  }
 
   if (with_configuration_NALs) {
-    // data from configuration blocks
-
-    Result<std::vector<uint8_t>> confData = read_bitstream_configuration_data();
-    if (!confData) {
-      return confData.error();
+    auto configuration = read_bitstream_configuration_data(&memory_handle, limits);
+    if (!configuration) {
+      return configuration.error();
     }
-
-    std::vector<uint8_t> data = *confData;
-
-    // append image data
-
-    auto dataResult = m_data_extent.read_data();
-    if (!dataResult) {
-      return dataResult.error();
-    }
-
-    data.insert(data.end(), (*dataResult)->begin(), (*dataResult)->end());
-
-    return data;
+    assembled_data = std::move(*configuration);
   }
-  else {
-    auto dataResult = m_data_extent.read_data();
-    if (!dataResult) {
-      return dataResult.error();
-    }
 
-    return {*(*dataResult)};
+  auto image_data = m_data_extent.read_data();
+  if (!image_data) {
+    return image_data.error();
   }
+
+  if (assembled_data.empty()) {
+    return *image_data;
+  }
+
+  if ((*image_data)->size() > assembled_data.max_size() - assembled_data.size() ||
+      (limits && limits->max_memory_block_size &&
+       (assembled_data.size() > limits->max_memory_block_size ||
+        (*image_data)->size() > limits->max_memory_block_size - assembled_data.size()))) {
+    return Error{heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+                 "Combined decoder input exceeds the maximum memory block size"};
+  }
+  if (Error err = memory_handle.alloc((*image_data)->size(), limits, "combined decoder input")) {
+    return err;
+  }
+
+  assembled_data.reserve(assembled_data.size() + (*image_data)->size());
+  assembled_data.insert(assembled_data.end(), (*image_data)->begin(), (*image_data)->end());
+  return &assembled_data;
 }
 
 
@@ -480,15 +487,19 @@ Error Decoder::decode_sequence_frame_from_compressed_data(bool upload_configurat
   // Fetch the compressed data once. The same buffer is used both to enforce the
   // security limits below and to feed the decoder, so we neither re-read the
   // iloc extents nor rebuild the combined config+bitstream buffer twice.
-  auto dataResult = get_compressed_data(upload_configuration_NALs);
+  MemoryHandle input_memory_handle;
+  std::vector<uint8_t> assembled_data;
+  auto dataResult = get_compressed_data(upload_configuration_NALs, assembled_data, input_memory_handle, limits);
   if (!dataResult) {
     return dataResult.error();
   }
 
+  const auto& compressed_data = **dataResult;
+
   // Check that we are pushing at least some data into the decoder.
   // Some decoders (e.g. aom) do not complain when the input data is empty and we might
   // get stuck in an endless decoding loop, waiting for the decompressed image.
-  if (dataResult->size() == 0) {
+  if (compressed_data.size() == 0) {
     return Error{
       heif_error_Invalid_input,
       heif_suberror_Unspecified,
@@ -504,7 +515,7 @@ Error Decoder::decode_sequence_frame_from_compressed_data(bool upload_configurat
   // an SPS may sit in the item data rather than only in the config record, so we
   // scan the whole buffer that is about to be pushed. Codecs that expose no coded
   // size return nullopt and skip the check.
-  auto codedSize = get_max_coded_image_size(*dataResult);
+  auto codedSize = get_max_coded_image_size(compressed_data);
   if (codedSize.is_error()) {
     return codedSize.error();
   }
@@ -555,12 +566,12 @@ Error Decoder::decode_sequence_frame_from_compressed_data(bool upload_configurat
     }
   }
 
-  //std::cout << "Decoder::decode_sequence_frame_from_compressed_data push " << dataResult->size() << "\n";
+  //std::cout << "Decoder::decode_sequence_frame_from_compressed_data push " << compressed_data.size() << "\n";
   if (m_decoder_plugin->plugin_api_version >= 5 && m_decoder_plugin->push_data2) {
-    err = m_decoder_plugin->push_data2(m_decoder, dataResult->data(), dataResult->size(), user_data);
+    err = m_decoder_plugin->push_data2(m_decoder, compressed_data.data(), compressed_data.size(), user_data);
   }
   else {
-    err = m_decoder_plugin->push_data(m_decoder, dataResult->data(), dataResult->size());
+    err = m_decoder_plugin->push_data(m_decoder, compressed_data.data(), compressed_data.size());
   }
   if (err.code != heif_error_Ok) {
     return Error(err.code, err.subcode, err.message);

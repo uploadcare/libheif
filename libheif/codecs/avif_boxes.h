@@ -90,6 +90,16 @@ public:
 
   void dump(std::ostream&, Indent&, bool full_log) const override;
 
+  Error get_headers(std::vector<uint8_t>& data, MemoryHandle& memory_handle,
+                    const heif_security_limits* limits) const
+  {
+    if (Error err = memory_handle.alloc(m_config_OBUs.size(), limits, "AV1 decoder configuration")) {
+      return err;
+    }
+    data = m_config_OBUs;
+    return Error::Ok;
+  }
+
   bool get_headers(std::vector<uint8_t>* dest) const
   {
     *dest = m_config_OBUs;

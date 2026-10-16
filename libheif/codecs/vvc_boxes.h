@@ -76,6 +76,8 @@ public:
   void dump(std::ostream&, Indent&, bool full_log) const override;
 
   bool get_headers(std::vector<uint8_t>* dest) const;
+  Error get_headers(std::vector<uint8_t>& data, MemoryHandle& memory_handle,
+                         const heif_security_limits* limits) const;
 
   void set_configuration(const configuration& config) { m_configuration = config; }
 

@@ -80,6 +80,8 @@ public:
   }
 
   void get_header_nals(std::vector<uint8_t>& data) const;
+  Error get_header_nals(std::vector<uint8_t>& data, MemoryHandle& memory_handle,
+                         const heif_security_limits* limits) const;
 
   void append_sps_nal(const uint8_t* data, size_t size);
 

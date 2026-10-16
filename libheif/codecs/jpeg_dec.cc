@@ -27,9 +27,15 @@
 #include <algorithm>
 
 
-Result<std::vector<uint8_t>> Decoder_JPEG::read_bitstream_configuration_data() const
+Result<std::vector<uint8_t>> Decoder_JPEG::read_bitstream_configuration_data(MemoryHandle* memory_handle,
+                                                                                 const heif_security_limits* limits) const
 {
   if (m_jpgC) {
+    if (memory_handle) {
+      if (Error err = memory_handle->alloc(m_jpgC->get_data().size(), limits, "JPEG decoder configuration")) {
+        return err;
+      }
+    }
     return m_jpgC->get_data();
   }
   else {
@@ -51,12 +57,14 @@ Error Decoder_JPEG::parse_SOF()
 
   // image data, usually from 'mdat'
 
-  auto dataResult = get_compressed_data(true);
+  MemoryHandle input_memory_handle;
+  std::vector<uint8_t> assembled_data;
+  auto dataResult = get_compressed_data(true, assembled_data, input_memory_handle);
   if (!dataResult) {
     return dataResult.error();
   }
 
-  return parse_SOF(*dataResult);
+  return parse_SOF(**dataResult);
 }
 
 

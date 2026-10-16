@@ -28,9 +28,16 @@
 #include <string>
 
 
-Result<std::vector<uint8_t>> Decoder_AVC::read_bitstream_configuration_data() const
+Result<std::vector<uint8_t>> Decoder_AVC::read_bitstream_configuration_data(MemoryHandle* memory_handle,
+                                                                                 const heif_security_limits* limits) const
 {
   std::vector<uint8_t> data;
+  if (memory_handle) {
+    if (Error err = m_avcC->get_header_nals(data, *memory_handle, limits)) {
+      return err;
+    }
+    return data;
+  }
   m_avcC->get_header_nals(data);
 
   return data;

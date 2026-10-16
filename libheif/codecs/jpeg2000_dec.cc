@@ -26,7 +26,8 @@
 #include <string>
 
 
-Result<std::vector<uint8_t>> Decoder_JPEG2000::read_bitstream_configuration_data() const
+Result<std::vector<uint8_t>> Decoder_JPEG2000::read_bitstream_configuration_data(MemoryHandle*,
+                                                                                 const heif_security_limits*) const
 {
   return std::vector<uint8_t>{};
 }
@@ -62,13 +63,15 @@ Result<std::optional<ImageSize>> Decoder_JPEG2000::get_max_coded_image_size(cons
 
 int Decoder_JPEG2000::get_luma_bits_per_pixel() const
 {
-  Result<std::vector<uint8_t>> imageDataResult = get_compressed_data(true);
+  MemoryHandle input_memory_handle;
+  std::vector<uint8_t> assembled_data;
+  auto imageDataResult = get_compressed_data(true, assembled_data, input_memory_handle);
   if (!imageDataResult) {
     return -1;
   }
 
   JPEG2000MainHeader header;
-  Error err = header.parseHeader(*imageDataResult);
+  Error err = header.parseHeader(**imageDataResult);
   if (err) {
     return -1;
   }
@@ -78,13 +81,15 @@ int Decoder_JPEG2000::get_luma_bits_per_pixel() const
 
 int Decoder_JPEG2000::get_chroma_bits_per_pixel() const
 {
-  Result<std::vector<uint8_t>> imageDataResult = get_compressed_data(true);
+  MemoryHandle input_memory_handle;
+  std::vector<uint8_t> assembled_data;
+  auto imageDataResult = get_compressed_data(true, assembled_data, input_memory_handle);
   if (!imageDataResult) {
     return -1;
   }
 
   JPEG2000MainHeader header;
-  Error err = header.parseHeader(*imageDataResult);
+  Error err = header.parseHeader(**imageDataResult);
   if (err) {
     return -1;
   }

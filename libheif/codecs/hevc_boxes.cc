@@ -363,6 +363,28 @@ void Box_hvcC::dump(std::ostream& sstr, Indent& indent, bool full_log) const
 }
 
 
+Error Box_hvcC::get_header_nals(std::vector<uint8_t>& data, MemoryHandle& memory_handle,
+                                        const heif_security_limits* limits) const
+{
+  size_t size = 0;
+  for (const auto& array : m_configuration.m_nal_array) {
+    for (const auto& unit : array.m_nal_units) {
+      if (size > data.max_size() - 4 || unit.size() > data.max_size() - size - 4) {
+        return Error{heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+                     "Decoder configuration size exceeds the vector size limit"};
+      }
+      size += 4 + unit.size();
+    }
+  }
+  if (Error err = memory_handle.alloc(size, limits, "HEVC decoder configuration")) {
+    return err;
+  }
+  data.reserve(size);
+  get_header_nals(&data);
+  return Error::Ok;
+}
+
+
 bool Box_hvcC::get_header_nals(std::vector<uint8_t>* dest) const
 {
   // Concatenate all header NALs, each prefixed by a 4-byte size.

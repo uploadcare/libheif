@@ -172,6 +172,28 @@ Error Box_vvcC::parse(BitstreamRange& range, const heif_security_limits* limits)
 }
 
 
+Error Box_vvcC::get_headers(std::vector<uint8_t>& data, MemoryHandle& memory_handle,
+                                        const heif_security_limits* limits) const
+{
+  size_t size = 0;
+  for (const auto& array : m_nal_array) {
+    for (const auto& unit : array.m_nal_units) {
+      if (size > data.max_size() - 4 || unit.size() > data.max_size() - size - 4) {
+        return Error{heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+                     "Decoder configuration size exceeds the vector size limit"};
+      }
+      size += 4 + unit.size();
+    }
+  }
+  if (Error err = memory_handle.alloc(size, limits, "VVC decoder configuration")) {
+    return err;
+  }
+  data.reserve(size);
+  get_headers(&data);
+  return Error::Ok;
+}
+
+
 bool Box_vvcC::get_headers(std::vector<uint8_t>* dest) const
 {
   for (const auto& nal_array : m_nal_array) {
