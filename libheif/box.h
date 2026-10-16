@@ -585,11 +585,13 @@ public:
 
   const std::vector<Item>& get_items() const { return m_items; }
 
+  // A supplied handle retains charges for appended bytes beyond this call.
   Error read_data(heif_item_id item,
                   const std::shared_ptr<StreamReader>& istr,
                   const std::shared_ptr<class Box_idat>&,
                   std::vector<uint8_t>* dest,
-                  const heif_security_limits* limits) const;
+                  const heif_security_limits* limits,
+                  MemoryHandle* memory_handle = nullptr) const;
 
   // Note: size==std::numeric_limits<uint64_t>::max() reads the data until the end
   Error read_data(heif_item_id item,
@@ -597,7 +599,8 @@ public:
                   const std::shared_ptr<class Box_idat>&,
                   std::vector<uint8_t>* dest,
                   uint64_t offset, uint64_t size,
-                  const heif_security_limits* limits) const;
+                  const heif_security_limits* limits,
+                  MemoryHandle* memory_handle = nullptr) const;
 
   void set_min_version(uint8_t min_version) { m_user_defined_min_version = min_version; }
 

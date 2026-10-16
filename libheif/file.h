@@ -123,14 +123,15 @@ public:
 
   std::string get_item_uri_type(heif_item_id ID) const;
 
-  Result<std::vector<uint8_t>> get_uncompressed_item_data(heif_item_id ID) const;
+  Result<std::vector<uint8_t>> get_uncompressed_item_data(heif_item_id ID, MemoryHandle* memory_handle = nullptr) const;
 
   Error append_data_from_file_range(std::vector<uint8_t>& out_data, uint64_t offset, uint32_t size) const;
 
-  Error append_data_from_iloc(heif_item_id ID, std::vector<uint8_t>& out_data, uint64_t offset, uint64_t size) const;
+  Error append_data_from_iloc(heif_item_id ID, std::vector<uint8_t>& out_data, uint64_t offset, uint64_t size,
+                              MemoryHandle* memory_handle = nullptr) const;
 
-  Error append_data_from_iloc(heif_item_id ID, std::vector<uint8_t>& out_data) const {
-    return append_data_from_iloc(ID, out_data, 0, std::numeric_limits<uint64_t>::max());
+  Error append_data_from_iloc(heif_item_id ID, std::vector<uint8_t>& out_data, MemoryHandle* memory_handle = nullptr) const {
+    return append_data_from_iloc(ID, out_data, 0, std::numeric_limits<uint64_t>::max(), memory_handle);
   }
 
   // If `out_compression` is not NULL, the compression method is returned there and the compressed data is returned.

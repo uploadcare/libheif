@@ -83,19 +83,18 @@ std::vector<uint8_t> compress(const uint8_t* input, size_t size, int windowSize)
 
 Result<std::vector<uint8_t>> do_inflate(const std::vector<uint8_t>& compressed_input, int windowSize,
                                         const heif_security_limits* limits,
-                                        uint64_t max_output_size)
+                                        uint64_t max_output_size, MemoryHandle* memory_handle)
 {
   if (compressed_input.empty()) {
     return Error(heif_error_Invalid_input, heif_suberror_Decompression_invalid_data,
                  "Empty zlib compressed data.");
   }
 
-  std::vector<uint8_t> output;
-
   // Track the growth of `output` against the security limits. Without this, a
   // high-ratio "decompression bomb" would expand a few KB of input into GBs of
   // output, bypassing max_memory_block_size / max_total_memory (GHSA-24wx-9w62-c96w).
   MemoryHandle output_memory_handle;
+  std::vector<uint8_t> output;
 
   // decompress data with zlib
 
@@ -173,6 +172,14 @@ Result<std::vector<uint8_t>> do_inflate(const std::vector<uint8_t>& compressed_i
                    "Decompressed zlib/deflate data is larger than expected.");
     }
 
+    if (limits && limits->max_memory_block_size &&
+        (output.size() > limits->max_memory_block_size ||
+         n_new_bytes > limits->max_memory_block_size - output.size())) {
+      inflateEnd(&strm);
+      return Error(heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+                   "Decompressed zlib/deflate data exceeds the maximum memory block size");
+    }
+
     if (Error memErr = output_memory_handle.alloc(n_new_bytes, limits, "zlib/deflate decompression output")) {
       inflateEnd(&strm);
       return memErr;
@@ -184,6 +191,11 @@ Result<std::vector<uint8_t>> do_inflate(const std::vector<uint8_t>& compressed_i
 
   inflateEnd(&strm);
 
+  if (memory_handle) {
+    if (auto err = memory_handle->merge(std::move(output_memory_handle))) {
+      return err;
+    }
+  }
   return output;
 }
 
@@ -200,15 +212,15 @@ std::vector<uint8_t> compress_deflate(const uint8_t* input, size_t size)
 
 Result<std::vector<uint8_t>> decompress_zlib(const std::vector<uint8_t>& compressed_input,
                                              const heif_security_limits* limits,
-                                             uint64_t max_output_size)
+                                             uint64_t max_output_size, MemoryHandle* memory_handle)
 {
-  return do_inflate(compressed_input, 15, limits, max_output_size);
+  return do_inflate(compressed_input, 15, limits, max_output_size, memory_handle);
 }
 
 Result<std::vector<uint8_t>> decompress_deflate(const std::vector<uint8_t>& compressed_input,
                                                 const heif_security_limits* limits,
-                                                uint64_t max_output_size)
+                                                uint64_t max_output_size, MemoryHandle* memory_handle)
 {
-  return do_inflate(compressed_input, -15, limits, max_output_size);
+  return do_inflate(compressed_input, -15, limits, max_output_size, memory_handle);
 }
 #endif

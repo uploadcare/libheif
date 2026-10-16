@@ -1141,8 +1141,11 @@ Error HeifContext::interpret_heif_file_images()
     metadata->content_type = content_type;
     metadata->item_uri_type = std::move(item_uri_type);
 
-    auto metadataResult = m_heif_file->get_uncompressed_item_data(id);
+    auto metadataResult = m_heif_file->get_uncompressed_item_data(id, &metadata->m_memory_handle);
     if (!metadataResult) {
+      if (metadataResult.error().sub_error_code == heif_suberror_Security_limit_exceeded) {
+        return metadataResult.error();
+      }
       if (metadataResult.error().error_code == heif_error_Unsupported_feature) {
         // The item uses a content_encoding that we cannot decode (unknown coding, or the
         // decompressor was not compiled in). That is a limitation of this one item, not of
@@ -1161,16 +1164,7 @@ Error HeifContext::interpret_heif_file_images()
       }
     }
     else {
-      metadata->m_data = *metadataResult;
-
-      // Account the (possibly decompressed) metadata against the total-memory budget
-      // for the lifetime of the context. This bounds the cumulative memory of up to
-      // max_items metadata items, which would otherwise bypass the security limits
-      // (GHSA-24wx-9w62-c96w).
-      if (Error memErr = metadata->m_memory_handle.alloc(metadata->m_data.size(), &m_limits,
-                                                         "decompressed item metadata")) {
-        return memErr;
-      }
+      metadata->m_data = std::move(*metadataResult);
     }
 
     // --- assign metadata to the image

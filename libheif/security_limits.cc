@@ -23,6 +23,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <utility>
 
 
 heif_security_limits global_security_limits{
@@ -313,6 +314,26 @@ Error MemoryHandle::alloc(size_t memory_amount, const heif_security_limits* limi
     it->second.max_memory_usage = it->second.total_memory_usage;
   }
 
+  return Error::Ok;
+}
+
+
+Error MemoryHandle::merge(MemoryHandle&& other)
+{
+  if (!other.m_limits_context) {
+    return Error::Ok;
+  }
+  if (!m_limits_context) {
+    *this = std::move(other);
+    return Error::Ok;
+  }
+  if (m_limits_context != other.m_limits_context) {
+    return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+            "Cannot merge memory reservations from different limits contexts"};
+  }
+  m_memory_amount += other.m_memory_amount;
+  other.m_limits_context = nullptr;
+  other.m_memory_amount = 0;
   return Error::Ok;
 }
 

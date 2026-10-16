@@ -166,6 +166,9 @@ public:
   Error alloc(size_t count, size_t element_size,
               const heif_security_limits* limits_context, const char* reason_description);
 
+  // Transfer another reservation without changing the tracker's total usage.
+  Error merge(MemoryHandle&& other);
+
   void free();
 
   void free(size_t memory_amount);

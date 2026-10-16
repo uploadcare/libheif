@@ -30,6 +30,7 @@
 #include "codecs/avc_boxes.h"
 #include "codecs/hevc_boxes.h"
 #include "codecs/vvc_boxes.h"
+#include "codecs/decoder.h"
 #include "mini.h"
 #include "file.h"
 #include "nclx.h"
@@ -579,4 +580,239 @@ TEST_CASE("AVC and VVC accumulate all payloads within one box")
   box.reset();
   limits.max_total_memory = 96;
   REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+}
+
+
+TEST_CASE("iloc rejects an exhausted total budget before copying item data")
+{
+  Box_iloc iloc;
+  REQUIRE(iloc.append_data(1, std::vector<uint8_t>(32, 0xAA), 0) == Error::Ok);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 32;
+  limits.max_total_memory = 31;
+  TotalMemoryTracker tracker(&limits);
+  std::vector<uint8_t> data;
+  Error err = iloc.read_data(1, nullptr, nullptr, &data, &limits);
+  REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+  REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  REQUIRE(data.empty());
+}
+
+
+TEST_CASE("metadata and cached decoder input respect the remaining context budget")
+{
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 32;
+  limits.max_total_memory = 32;
+  TotalMemoryTracker tracker(&limits);
+  auto file = std::make_shared<HeifFile>();
+  file->set_security_limits(&limits);
+  file->init_meta_box();
+  auto iloc = std::make_shared<Box_iloc>();
+  REQUIRE(iloc->append_data(1, std::vector<uint8_t>(32, 0xAA), 0) == Error::Ok);
+  file->set_iloc_box(iloc);
+  auto infe = std::make_shared<Box_infe>();
+  infe->set_item_ID(1);
+  infe->set_item_type_4cc(fourcc("Exif"));
+  file->add_infe_box(1, infe);
+  MemoryHandle occupied;
+  REQUIRE(occupied.alloc(1, &limits, "other retained data") == Error::Ok);
+
+  SECTION("metadata is rejected while another allocation occupies the budget") {
+    auto result = file->get_uncompressed_item_data(1);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().error_code == heif_error_Memory_allocation_error);
+    occupied.free();
+    result = file->get_uncompressed_item_data(1);
+    REQUIRE(result);
+    REQUIRE(*result == std::vector<uint8_t>(32, 0xAA));
+  }
+
+  SECTION("failed decoder reads leave no cached allocation and can be retried") {
+    DataExtent extent;
+    extent.set_from_image_item(file, 1);
+    auto result = extent.read_data();
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().error_code == heif_error_Memory_allocation_error);
+    REQUIRE(extent.m_raw.empty());
+    occupied.free();
+    result = extent.read_data();
+    REQUIRE(result);
+    REQUIRE(**result == std::vector<uint8_t>(32, 0xAA));
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(1, &limits, "budget probe") != Error::Ok);
+    REQUIRE(extent.read_data());
+  }
+}
+
+
+TEST_CASE("file-backed iloc reads reserve each extent before reading payload bytes")
+{
+  const auto method = GENERATE(uint16_t{0}, uint16_t{1});
+  StreamWriter payload_writer;
+  payload_writer.write32(40);
+  payload_writer.write32(fourcc("idat"));
+  payload_writer.write(std::vector<uint8_t>(32, 0xAA));
+  const auto payload = payload_writer.get_data();
+  std::shared_ptr<Box> parsed_idat;
+  REQUIRE(parse_box(payload, heif_get_global_security_limits(), parsed_idat) == Error::Ok);
+  auto idat = std::dynamic_pointer_cast<Box_idat>(parsed_idat);
+  REQUIRE(idat);
+
+  StreamWriter writer;
+  writer.write32(40);
+  writer.write32(fourcc("iloc"));
+  writer.write32(0x01000000);
+  writer.write8(0x44);
+  writer.write8(0);
+  writer.write16(1);
+  writer.write16(1);
+  writer.write16(method);
+  writer.write16(0);
+  writer.write16(2);
+  for (uint32_t i = 0; i < 2; i++) {
+    writer.write32((method == 0 ? 8 : 0) + i * 16);
+    writer.write32(16);
+  }
+  std::shared_ptr<Box> parsed_iloc;
+  REQUIRE(parse_box(writer.get_data(), heif_get_global_security_limits(), parsed_iloc) == Error::Ok);
+  auto iloc = std::dynamic_pointer_cast<Box_iloc>(parsed_iloc);
+  REQUIRE(iloc);
+
+  class CountingReader : public StreamReader_memory {
+  public:
+    using StreamReader_memory::StreamReader_memory;
+    size_t bytes_read = 0;
+    bool read(void* data, size_t size) override {
+      bytes_read += size;
+      return StreamReader_memory::read(data, size);
+    }
+  };
+  auto reader = std::make_shared<CountingReader>(payload.data(), payload.size(), false);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 32;
+  limits.max_total_memory = 32;
+  TotalMemoryTracker tracker(&limits);
+  MemoryHandle owner;
+  std::vector<uint8_t> data;
+
+  SECTION("exhausted budget rejects before reading the first extent") {
+    limits.max_total_memory = 15;
+    Error err = iloc->read_data(1, reader, idat, &data, &limits, &owner);
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    REQUIRE(reader->bytes_read == 0);
+    REQUIRE(data.empty());
+  }
+
+  SECTION("a later failure leaves only the already reserved prefix") {
+    limits.max_total_memory = 16;
+    Error err = iloc->read_data(1, reader, idat, &data, &limits, &owner);
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(reader->bytes_read == 16);
+    REQUIRE(data == std::vector<uint8_t>(16, 0xAA));
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(1, &limits, "budget probe") != Error::Ok);
+    std::vector<uint8_t>().swap(data);
+    owner.free();
+    REQUIRE(probe.alloc(1, &limits, "budget probe") == Error::Ok);
+  }
+
+  SECTION("exact budget accepts and retains both extents") {
+    REQUIRE(iloc->read_data(1, reader, idat, &data, &limits, &owner) == Error::Ok);
+    REQUIRE(reader->bytes_read == 32);
+    REQUIRE(data == std::vector<uint8_t>(32, 0xAA));
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(1, &limits, "budget probe") != Error::Ok);
+  }
+}
+
+
+TEST_CASE("metadata reservations survive decompression and transfer to their owner")
+{
+  const auto compression = GENERATE(heif_metadata_compression_off,
+                                    heif_metadata_compression_zlib,
+                                    heif_metadata_compression_deflate,
+                                    heif_metadata_compression_brotli);
+  if (!heif_metadata_compression_method_supported(compression)) {
+    SUCCEED("Compression method is not enabled in this build");
+    return;
+  }
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 1024;
+  limits.max_total_memory = 4096;
+  TotalMemoryTracker tracker(&limits);
+  auto file = std::make_shared<HeifFile>();
+  file->set_security_limits(&limits);
+  const std::vector<uint8_t> payload(512, 0xAA);
+  auto id = file->add_infe_mime("application/rdf+xml", compression, payload.data(), payload.size());
+  REQUIRE(id);
+
+  SECTION("only retained output remains charged after a successful read") {
+    ImageMetadata metadata;
+    {
+      auto result = file->get_uncompressed_item_data(*id, &metadata.m_memory_handle);
+      REQUIRE(result);
+      REQUIRE(*result == payload);
+      metadata.m_data = std::move(*result);
+    }
+    limits.max_total_memory = payload.size();
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(1, &limits, "budget probe") != Error::Ok);
+    REQUIRE(metadata.m_data == payload);
+  }
+
+  SECTION("compressed input and output must fit concurrently") {
+    if (compression == heif_metadata_compression_off) return;
+    limits.max_total_memory = payload.size();
+    ImageMetadata metadata;
+    auto result = file->get_uncompressed_item_data(*id, &metadata.m_memory_handle);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().error_code == heif_error_Memory_allocation_error);
+    REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+}
+
+
+TEST_CASE("compressed metadata block limits apply to the complete output")
+{
+  const auto compression = GENERATE(heif_metadata_compression_zlib,
+                                    heif_metadata_compression_deflate,
+                                    heif_metadata_compression_brotli);
+  if (!heif_metadata_compression_method_supported(compression)) {
+    SUCCEED("Compression method is not enabled in this build");
+    return;
+  }
+  const size_t chunk_size = compression == heif_metadata_compression_brotli ? 262144 : 8192;
+  const std::vector<uint8_t> payload(2 * chunk_size, 0xAA);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = payload.size();
+  limits.max_total_memory = 0;
+  TotalMemoryTracker tracker(&limits);
+  HeifFile file;
+  file.set_security_limits(&limits);
+  auto id = file.add_infe_mime("application/rdf+xml", compression, payload.data(), payload.size());
+  REQUIRE(id);
+  ImageMetadata metadata;
+
+  SECTION("one byte below the complete size rejects otherwise acceptable chunks") {
+    limits.max_memory_block_size = payload.size() - 1;
+    auto result = file.get_uncompressed_item_data(*id, &metadata.m_memory_handle);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().error_code == heif_error_Memory_allocation_error);
+    REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+
+  SECTION("an exact block budget accepts the complete output") {
+    auto result = file.get_uncompressed_item_data(*id, &metadata.m_memory_handle);
+    REQUIRE(result);
+    REQUIRE(*result == payload);
+  }
+
+  SECTION("a disabled block limit accepts the complete output") {
+    limits.max_memory_block_size = 0;
+    auto result = file.get_uncompressed_item_data(*id, &metadata.m_memory_handle);
+    REQUIRE(result);
+    REQUIRE(*result == payload);
+  }
 }

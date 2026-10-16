@@ -50,9 +50,10 @@ namespace {
 //   item 1 ('mski', 8x8, 8bpp): the primary image. The mask codec needs no
 //           bitstream (its "compressed" data is just the raw pixel bytes), so no
 //           codec plugin is required and the file opens without decoding.
-//   item 2 ('mime', content_encoding "br"): a brotli-compressed metadata item,
-//           'cdsc'-referencing item 1, carrying the supplied bomb payload.
-std::vector<uint8_t> build_heif_with_brotli_mime(const std::vector<uint8_t>& brotli_payload) {
+//   item 2: metadata 'cdsc'-referencing item 1. MIME payloads use Brotli encoding;
+//           other item types carry uncompressed data.
+std::vector<uint8_t> build_heif_with_metadata(const std::vector<uint8_t>& metadata_payload,
+                                             const char* item_type = "mime") {
   std::vector<uint8_t> ftyp_payload;
   append_fourcc(ftyp_payload, "heic");
   put_u32_be(ftyp_payload, 0);
@@ -74,7 +75,7 @@ std::vector<uint8_t> build_heif_with_brotli_mime(const std::vector<uint8_t>& bro
   put_u16_be(pitm_payload, 1);
   auto pitm = make_box("pitm", pitm_payload, /*full=*/true);
 
-  // iinf: item 1 = 'mski', item 2 = 'mime'.
+  // iinf: item 1 = 'mski', item 2 = metadata.
   std::vector<uint8_t> infe1_payload;
   put_u16_be(infe1_payload, 1);
   put_u16_be(infe1_payload, 0);
@@ -85,10 +86,15 @@ std::vector<uint8_t> build_heif_with_brotli_mime(const std::vector<uint8_t>& bro
   std::vector<uint8_t> infe2_payload;
   put_u16_be(infe2_payload, 2);
   put_u16_be(infe2_payload, 0);
-  append_fourcc(infe2_payload, "mime");
+  append_fourcc(infe2_payload, item_type);
   append_cstr(infe2_payload, "");                          // item_name
-  append_cstr(infe2_payload, "application/octet-stream");  // content_type
-  append_cstr(infe2_payload, "br");                        // content_encoding
+  if (std::string(item_type) == "mime") {
+    append_cstr(infe2_payload, "application/octet-stream");  // content_type
+    append_cstr(infe2_payload, "br");                        // content_encoding
+  }
+  else if (std::string(item_type) == "uri ") {
+    append_cstr(infe2_payload, "https://example.com/metadata");
+  }
   auto infe2 = make_box("infe", infe2_payload, /*full=*/true, /*version=*/2);
 
   std::vector<uint8_t> iinf_payload;
@@ -125,13 +131,13 @@ std::vector<uint8_t> build_heif_with_brotli_mime(const std::vector<uint8_t>& bro
   append(iprp_payload, ipma);
   auto iprp = make_box("iprp", iprp_payload);
 
-  // idat: 64 bytes of raw 8x8 8bpp mask data, followed by the brotli bomb payload.
+  // idat: 64 bytes of raw 8x8 8bpp mask data, followed by the metadata payload.
   std::vector<uint8_t> idat_payload;
-  idat_payload.reserve(64 + brotli_payload.size());
+  idat_payload.reserve(64 + metadata_payload.size());
   idat_payload.resize(64, 0x7F);
   const uint32_t bomb_offset = static_cast<uint32_t>(idat_payload.size());
-  const uint32_t bomb_length = static_cast<uint32_t>(brotli_payload.size());
-  append(idat_payload, brotli_payload);
+  const uint32_t bomb_length = static_cast<uint32_t>(metadata_payload.size());
+  append(idat_payload, metadata_payload);
   auto idat = make_box("idat", idat_payload);
 
   // iloc (version 1): both items store their data in idat (construction_method=1).
@@ -190,7 +196,7 @@ TEST_CASE("brotli mime metadata decompression bomb is bounded by security limits
   REQUIRE(!bomb.empty());
   REQUIRE(bomb.size() < decompressed_size); // it really is highly compressible
 
-  std::vector<uint8_t> file = build_heif_with_brotli_mime(bomb);
+  std::vector<uint8_t> file = build_heif_with_metadata(bomb);
 
   // --- with a tight total-memory limit, opening must fail rather than allocate the
   //     whole decompressed payload (previously it ignored the limit entirely).
@@ -223,4 +229,34 @@ TEST_CASE("brotli mime metadata decompression bomb is bounded by security limits
 #else
   SUCCEED("brotli support not compiled in - skipping decompression bomb test");
 #endif
+}
+
+
+TEST_CASE("security limit failures on other metadata types abort opening")
+{
+  const char* item_type = GENERATE("test", "uri ");
+  const std::vector<uint8_t> payload(4096, 0xAA);
+  const auto file = build_heif_with_metadata(payload, item_type);
+  auto* ctx = heif_context_alloc();
+  REQUIRE(ctx);
+  auto* limits = heif_context_get_security_limits(ctx);
+  limits->max_memory_block_size = 0;
+
+  SECTION("an exhausted total budget is returned rather than silently dropping metadata") {
+    limits->max_total_memory = payload.size() - 1;
+    auto err = heif_context_read_from_memory_without_copy(ctx, file.data(), file.size(), nullptr);
+    REQUIRE(err.code == heif_error_Memory_allocation_error);
+    REQUIRE(err.subcode == heif_suberror_Security_limit_exceeded);
+  }
+
+  SECTION("sufficient budget preserves the metadata") {
+    limits->max_total_memory = 65536;
+    auto err = heif_context_read_from_memory_without_copy(ctx, file.data(), file.size(), nullptr);
+    REQUIRE(err.code == heif_error_Ok);
+    heif_image_handle* handle = nullptr;
+    REQUIRE(heif_context_get_primary_image_handle(ctx, &handle).code == heif_error_Ok);
+    REQUIRE(heif_image_handle_get_number_of_metadata_blocks(handle, item_type) == 1);
+    heif_image_handle_release(handle);
+  }
+  heif_context_free(ctx);
 }

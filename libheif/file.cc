@@ -713,7 +713,7 @@ Error HeifFile::get_properties(heif_item_id imageID,
 }
 
 
-Result<std::vector<uint8_t>> HeifFile::get_uncompressed_item_data(heif_item_id ID) const
+Result<std::vector<uint8_t>> HeifFile::get_uncompressed_item_data(heif_item_id ID, MemoryHandle* memory_handle) const
 {
   assert(m_limits);
 
@@ -743,6 +743,8 @@ Result<std::vector<uint8_t>> HeifFile::get_uncompressed_item_data(heif_item_id I
   // --- decompress data
 
   Error error;
+  MemoryHandle scoped_memory_handle;
+  auto* output_memory_handle = memory_handle ? memory_handle : &scoped_memory_handle;
 
   if (item_type == fourcc("mime")) {
     std::string encoding = infe_box->get_content_encoding();
@@ -754,13 +756,14 @@ Result<std::vector<uint8_t>> HeifFile::get_uncompressed_item_data(heif_item_id I
     if (!encoding.empty() && encoding != "identity") {
       if (encoding == "compress_zlib") {
 #if HAVE_ZLIB
+        MemoryHandle compressed_memory_handle;
         std::vector<uint8_t> compressed_data;
-        error = m_iloc_box->read_data(ID, m_input_stream, m_idat_box, &compressed_data, m_limits);
+        error = m_iloc_box->read_data(ID, m_input_stream, m_idat_box, &compressed_data, m_limits, &compressed_memory_handle);
         if (error) {
           return error;
         }
 
-        return decompress_zlib(compressed_data, m_limits);
+        return decompress_zlib(compressed_data, m_limits, UINT64_MAX, output_memory_handle);
 #else
         return Error(heif_error_Unsupported_feature,
                      heif_suberror_Unsupported_header_compression_method,
@@ -769,12 +772,13 @@ Result<std::vector<uint8_t>> HeifFile::get_uncompressed_item_data(heif_item_id I
       }
       else if (encoding == "deflate") {
 #if HAVE_ZLIB
+        MemoryHandle compressed_memory_handle;
         std::vector<uint8_t> compressed_data;
-        error = m_iloc_box->read_data(ID, m_input_stream, m_idat_box, &compressed_data, m_limits);
+        error = m_iloc_box->read_data(ID, m_input_stream, m_idat_box, &compressed_data, m_limits, &compressed_memory_handle);
         if (error) {
           return error;
         }
-        return decompress_deflate(compressed_data, m_limits);
+        return decompress_deflate(compressed_data, m_limits, UINT64_MAX, output_memory_handle);
 #else
         return Error(heif_error_Unsupported_feature,
                      heif_suberror_Unsupported_header_compression_method,
@@ -783,12 +787,13 @@ Result<std::vector<uint8_t>> HeifFile::get_uncompressed_item_data(heif_item_id I
       }
       else if (encoding == "br") {
 #if HAVE_BROTLI
+        MemoryHandle compressed_memory_handle;
         std::vector<uint8_t> compressed_data;
-        error = m_iloc_box->read_data(ID, m_input_stream, m_idat_box, &compressed_data, m_limits);
+        error = m_iloc_box->read_data(ID, m_input_stream, m_idat_box, &compressed_data, m_limits, &compressed_memory_handle);
         if (error) {
           return error;
         }
-        return decompress_brotli(compressed_data, m_limits);
+        return decompress_brotli(compressed_data, m_limits, UINT64_MAX, output_memory_handle);
 #else
         return Error(heif_error_Unsupported_feature,
                      heif_suberror_Unsupported_header_compression_method,
@@ -805,7 +810,7 @@ Result<std::vector<uint8_t>> HeifFile::get_uncompressed_item_data(heif_item_id I
   // --- read uncompressed
 
   std::vector<uint8_t> data;
-  error = m_iloc_box->read_data(ID, m_input_stream, m_idat_box, &data, m_limits);
+  error = m_iloc_box->read_data(ID, m_input_stream, m_idat_box, &data, m_limits, output_memory_handle);
   if (error) {
     return error;
   }
@@ -864,7 +869,8 @@ Error HeifFile::append_data_from_file_range(std::vector<uint8_t>& out_data, uint
 }
 
 
-Error HeifFile::append_data_from_iloc(heif_item_id ID, std::vector<uint8_t>& out_data, uint64_t offset, uint64_t size) const
+Error HeifFile::append_data_from_iloc(heif_item_id ID, std::vector<uint8_t>& out_data, uint64_t offset, uint64_t size,
+                                      MemoryHandle* memory_handle) const
 {
   if (!m_iloc_box) {
     return Error(heif_error_Invalid_input, heif_suberror_No_iloc_box);
@@ -887,7 +893,7 @@ Error HeifFile::append_data_from_iloc(heif_item_id ID, std::vector<uint8_t>& out
             sstr.str()};
   }
 
-  return m_iloc_box->read_data(ID, m_input_stream, m_idat_box, &out_data, offset, size, m_limits);
+  return m_iloc_box->read_data(ID, m_input_stream, m_idat_box, &out_data, offset, size, m_limits, memory_handle);
 }
 
 
