@@ -912,6 +912,7 @@ protected:
 
 private:
   std::string m_aux_type;
+  MemoryHandle m_memory_handle;
   std::vector<uint8_t> m_aux_subtypes;
 };
 
