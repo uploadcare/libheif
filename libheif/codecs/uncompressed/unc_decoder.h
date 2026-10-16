@@ -83,19 +83,21 @@ protected:
                                                      std::vector<uint8_t>* data,
                                                      uint64_t range_start_offset, uint64_t range_size,
                                                      uint32_t tile_idx,
-                                                     const Box_iloc::Item* item) const;
+                                                     MemoryHandle& memory_handle) const;
 
   // Decompress the complete item. This is used when the compressed units do not give
   // access to the individual tiles (UncompressedImageCodec::TileAccess::whole_item).
   // The item has to decompress to exactly 'expected_size' bytes.
   Result<std::vector<uint8_t>> decompress_whole_item(const DataExtent& dataExtent,
                                                      const UncompressedImageCodec::unci_properties& properties,
-                                                     uint64_t expected_size) const;
+                                                     uint64_t expected_size,
+                                                     MemoryHandle& memory_handle) const;
 
   Result<std::vector<uint8_t>> do_decompress_data(std::shared_ptr<const Box_cmpC>& cmpC_box,
                                                   const std::vector<uint8_t>& compressed_data,
                                                   const heif_security_limits* limits,
-                                                  uint64_t max_output_size = UINT64_MAX) const;
+                                                  uint64_t max_output_size,
+                                                  MemoryHandle& memory_handle) const;
 
   const uint32_t m_width;
   const uint32_t m_height;

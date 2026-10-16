@@ -31,6 +31,9 @@
 #include "codecs/hevc_boxes.h"
 #include "codecs/vvc_boxes.h"
 #include "codecs/decoder.h"
+#if WITH_UNCOMPRESSED_CODEC
+#include "codecs/uncompressed/unc_decoder.h"
+#endif
 #include "mini.h"
 #include "file.h"
 #include "nclx.h"
@@ -727,6 +730,190 @@ TEST_CASE("file-backed iloc reads reserve each extent before reading payload byt
   }
 }
 
+
+#if WITH_UNCOMPRESSED_CODEC
+namespace {
+
+class MemoryTestUnciDecoder : public unc_decoder
+{
+public:
+  explicit MemoryTestUnciDecoder(const std::shared_ptr<Box_uncC>& config)
+      : unc_decoder(1, 1, nullptr, config, {}) {}
+
+  using unc_decoder::decompress_whole_item;
+
+  Result<std::vector<uint64_t>> get_tile_data_sizes() const override
+  {
+    return std::vector<uint64_t>{16, 16};
+  }
+
+  Error decode_tile(const std::vector<uint8_t>&, std::shared_ptr<HeifPixelImage>&,
+                    uint32_t, uint32_t) override
+  {
+    return Error::Ok;
+  }
+};
+
+} // namespace
+
+TEST_CASE("unci assembled units enforce complete block and concurrent total budgets")
+{
+  if (!heif_metadata_compression_method_supported(heif_metadata_compression_deflate)) {
+    SUCCEED("Deflate compression is not enabled in this build");
+    return;
+  }
+  const bool whole_item = GENERATE(false, true);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 32;
+  limits.max_total_memory = 90;
+  TotalMemoryTracker tracker(&limits);
+  auto file = std::make_shared<HeifFile>();
+  file->set_security_limits(&limits);
+  auto config = std::make_shared<Box_uncC>();
+  config->set_number_of_tile_columns(1);
+  config->set_number_of_tile_rows(1);
+  config->set_interleave_type(0);
+  MemoryTestUnciDecoder decoder(config);
+  UncompressedImageCodec::unci_properties properties;
+  properties.uncC = config;
+  auto compression = std::make_shared<Box_cmpC>();
+  compression->set_compression_type(fourcc("defl"));
+  compression->set_compressed_unit_type(whole_item ? heif_cmpC_compressed_unit_type_full_item
+                                                 : heif_cmpC_compressed_unit_type_image_row);
+  properties.cmpC = compression;
+  auto units = std::make_shared<Box_icef>();
+  // Two entries deliberately reference the same stored deflate block.
+  units->add_component({0, 21});
+  units->add_component({0, 21});
+  properties.icef = units;
+  DataExtent extent;
+  extent.m_file = file;
+  REQUIRE(extent.m_raw_memory_handle.alloc(21, &limits, "test compressed input") == Error::Ok);
+  extent.m_raw = {0x01, 0x10, 0x00, 0xEF, 0xFF};
+  extent.m_raw.insert(extent.m_raw.end(), 16, 0xAA);
+
+  SECTION("exact peak budget succeeds and output stays charged until destruction") {
+    {
+      MemoryHandle owner;
+      std::vector<uint8_t> data;
+      if (whole_item) {
+        auto result = decoder.decompress_whole_item(extent, properties, 32, owner);
+        REQUIRE(result);
+        data = std::move(*result);
+      }
+      else {
+        REQUIRE(decoder.fetch_tile_data(extent, properties, 0, 0, data, owner) == Error::Ok);
+      }
+      REQUIRE(data == std::vector<uint8_t>(32, 0xAA));
+      limits.max_memory_block_size = 0;
+      MemoryHandle probe;
+      REQUIRE(probe.alloc(38, &limits, "remaining budget") != Error::Ok);
+      REQUIRE(probe.alloc(37, &limits, "remaining budget") == Error::Ok);
+    }
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(69, &limits, "released output budget") == Error::Ok);
+  }
+
+  SECTION("individually valid units cannot exceed the complete block limit") {
+    limits.max_memory_block_size = 31;
+    MemoryHandle owner;
+    std::vector<uint8_t> data;
+    Error err;
+    if (whole_item) {
+      auto result = decoder.decompress_whole_item(extent, properties, 32, owner);
+      REQUIRE_FALSE(result);
+      err = result.error();
+    }
+    else {
+      err = decoder.fetch_tile_data(extent, properties, 0, 0, data, owner);
+    }
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    REQUIRE(data.empty());
+  }
+
+  SECTION("concurrent unit and assembly storage must fit the total budget") {
+    limits.max_total_memory = 89;
+    {
+      MemoryHandle owner;
+      std::vector<uint8_t> data;
+      Error err;
+      if (whole_item) {
+        auto result = decoder.decompress_whole_item(extent, properties, 32, owner);
+        REQUIRE_FALSE(result);
+        err = result.error();
+      }
+      else {
+        err = decoder.fetch_tile_data(extent, properties, 0, 0, data, owner);
+      }
+      REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+      REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    }
+    limits.max_memory_block_size = 0;
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(68, &limits, "released failed output") == Error::Ok);
+  }
+
+  SECTION("disabled limits allow the assembled output") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = 0;
+    MemoryHandle owner;
+    std::vector<uint8_t> data;
+    if (whole_item) {
+      auto result = decoder.decompress_whole_item(extent, properties, 32, owner);
+      REQUIRE(result);
+      data = std::move(*result);
+    }
+    else {
+      REQUIRE(decoder.fetch_tile_data(extent, properties, 0, 0, data, owner) == Error::Ok);
+    }
+    REQUIRE(data == std::vector<uint8_t>(32, 0xAA));
+  }
+
+  SECTION("single blob output retains its decompression reservation") {
+    properties.icef = nullptr;
+    limits.max_total_memory = 37;
+    {
+      MemoryHandle owner;
+      auto result = decoder.decompress_whole_item(extent, properties, 16, owner);
+      REQUIRE(result);
+      REQUIRE(*result == std::vector<uint8_t>(16, 0xAA));
+      MemoryHandle probe;
+      REQUIRE(probe.alloc(1, &limits, "retained output") != Error::Ok);
+    }
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(16, &limits, "released output") == Error::Ok);
+  }
+}
+
+TEST_CASE("unci scattered raw tile reads check the complete tile before copying")
+{
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 31;
+  limits.max_total_memory = 80;
+  TotalMemoryTracker tracker(&limits);
+  auto file = std::make_shared<HeifFile>();
+  file->set_security_limits(&limits);
+  auto config = std::make_shared<Box_uncC>();
+  config->set_number_of_tile_columns(1);
+  config->set_number_of_tile_rows(1);
+  MemoryTestUnciDecoder decoder(config);
+  UncompressedImageCodec::unci_properties properties;
+  properties.uncC = config;
+  DataExtent extent;
+  extent.m_file = file;
+  extent.m_raw.assign(32, 0xAA);
+  MemoryHandle owner;
+  std::vector<uint8_t> data;
+  Error err = decoder.fetch_tile_data(extent, properties, 0, 0, data, owner);
+  REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  REQUIRE(data.empty());
+  limits.max_memory_block_size = 32;
+  REQUIRE(extent.m_raw_memory_handle.alloc(32, &limits, "test raw input") == Error::Ok);
+  REQUIRE(decoder.fetch_tile_data(extent, properties, 0, 0, data, owner) == Error::Ok);
+  REQUIRE(data == extent.m_raw);
+}
+#endif
 
 TEST_CASE("metadata reservations survive decompression and transfer to their owner")
 {
