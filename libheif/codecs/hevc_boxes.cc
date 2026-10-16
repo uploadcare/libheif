@@ -34,7 +34,8 @@
 #include "api_structs.h"
 
 
-Error HEVCDecoderConfigurationRecord::parse(BitstreamRange& range, const heif_security_limits* limits)
+Error HEVCDecoderConfigurationRecord::parse(BitstreamRange& range, const heif_security_limits* limits,
+                                            MemoryHandle& memory_handle)
 {
   uint8_t byte;
 
@@ -90,6 +91,9 @@ Error HEVCDecoderConfigurationRecord::parse(BitstreamRange& range, const heif_se
       }
 
       if (range.prepare_read(size)) {
+        if (auto err = memory_handle.alloc(size, limits, "hvcC NAL payload")) {
+          return err;
+        }
         nal_unit.resize(size);
         bool success = range.get_istream()->read((char*) nal_unit.data(), size);
         if (!success) {
@@ -268,7 +272,7 @@ bool HEVCDecoderConfigurationRecord::is_miaf_profile() const
 
 Error Box_hvcC::parse(BitstreamRange& range, const heif_security_limits* limits)
 {
-  return m_configuration.parse(range, limits);
+  return m_configuration.parse(range, limits, m_memory_handle);
 }
 
 

@@ -27,13 +27,16 @@
 #include "catch_amalgamated.hpp"
 #include "box.h"
 #include "codecs/avif_boxes.h"
+#include "codecs/hevc_boxes.h"
 #include "nclx.h"
 #include "security_limits.h"
 #include "sequences/seq_boxes.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -60,6 +63,22 @@ std::vector<uint8_t> make_box(const std::string& kind, uint32_t count)
       writer.write16(1);
       writer.write16(0);
     }
+  }
+  else if (kind == "hvcC") {
+    HEVCDecoderConfigurationRecord config{};
+    config.configuration_version = 1;
+    config.bit_depth_luma = 8;
+    config.bit_depth_chroma = 8;
+    HEVCDecoderConfigurationRecord::NalArray array{};
+    if (count) {
+      std::vector<uint8_t> nal(count);
+      for (uint32_t i = 0; i < count; i++) {
+        nal[i] = static_cast<uint8_t>(i);
+      }
+      array.m_nal_units.push_back(std::move(nal));
+    }
+    config.m_nal_array.push_back(std::move(array));
+    REQUIRE(config.write(writer) == Error::Ok);
   }
   else {
     if (kind == "av1C") {
@@ -97,7 +116,7 @@ Error parse_box(const std::vector<uint8_t>& data, const heif_security_limits* li
 
 TEST_CASE("box payload allocations respect block and total memory limits")
 {
-  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC");
+  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC");
   INFO("box: " << kind);
   const auto data = make_box(kind, 32);
   const size_t amount = allocation_size(kind, 32);
@@ -166,7 +185,7 @@ TEST_CASE("box payload allocations respect block and total memory limits")
 
 TEST_CASE("parsed box storage remains charged until the box is destroyed")
 {
-  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC");
+  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC");
   INFO("box: " << kind);
   const auto data = make_box(kind, 32);
   const size_t amount = allocation_size(kind, 32);
@@ -189,7 +208,7 @@ TEST_CASE("parsed box storage remains charged until the box is destroyed")
 
 TEST_CASE("empty box payloads fit a minimal memory budget")
 {
-  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC");
+  const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC");
   INFO("box: " << kind);
   heif_security_limits limits = *heif_get_global_security_limits();
   limits.max_memory_block_size = 1;
@@ -290,4 +309,56 @@ TEST_CASE("nclx parsing does not consume the ICC payload budget")
   StreamWriter output;
   REQUIRE(box->write(output) == Error::Ok);
   REQUIRE(output.get_data() == writer.get_data());
+}
+
+
+TEST_CASE("hvcC accounts for all NAL payloads within and across arrays")
+{
+  const bool separate_arrays = GENERATE(false, true);
+  auto data = make_box("hvcC", 32);
+  // The configuration header ends at byte 31; each array starts with a
+  // one-byte type and a two-byte NAL count.
+  const auto second_start = data.begin() + (separate_arrays ? 31 : 34);
+  const std::vector<uint8_t> second(second_start, data.end());
+  data.insert(data.end(), second.begin(), second.end());
+  data[separate_arrays ? 30 : 33] = 2;
+  StreamWriter writer;
+  writer.write32(static_cast<uint32_t>(data.size()));
+  const auto header = writer.get_data();
+  std::copy(header.begin(), header.end(), data.begin());
+
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 32;
+  limits.max_total_memory = 64;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+  StreamWriter output;
+  REQUIRE(box->write(output) == Error::Ok);
+  REQUIRE(output.get_data() == data);
+  box.reset();
+
+  limits.max_total_memory = 63;
+  Error err = parse_box(data, &limits, box);
+  REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+  REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  box.reset();
+  REQUIRE(parse_box(make_box("hvcC", 32), &limits, box) == Error::Ok);
+}
+
+
+TEST_CASE("truncated hvcC NAL payloads fail before reserving storage")
+{
+  auto data = make_box("hvcC", 32);
+  // Claim a NAL larger than the remaining payload.
+  data[35] = 33;
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 1;
+  limits.max_total_memory = 1;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  Error err = parse_box(data, &limits, box);
+  REQUIRE(err.error_code == heif_error_Invalid_input);
+  REQUIRE(err.sub_error_code == heif_suberror_End_of_data);
+  REQUIRE(tracker.get_max_total_memory_used() == 0);
 }

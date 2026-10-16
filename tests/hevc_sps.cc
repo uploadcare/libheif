@@ -202,8 +202,9 @@ TEST_CASE("SPS constraint flags are copied to hvcC")
 
   BitstreamRange range(std::make_shared<StreamReader_memory>(data.data(), data.size(), false), data.size());
 
+  MemoryHandle memory_handle;
   HEVCDecoderConfigurationRecord parsed{};
-  err = parsed.parse(range, heif_get_global_security_limits());
+  err = parsed.parse(range, heif_get_global_security_limits(), memory_handle);
   REQUIRE(!err);
   CHECK(parsed.general_constraint_indicator_flags == config.general_constraint_indicator_flags);
 }

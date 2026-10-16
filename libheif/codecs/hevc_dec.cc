@@ -76,7 +76,7 @@ Result<std::optional<ImageSize>> Decoder_HEVC::get_max_coded_image_size(const st
       continue;
     }
 
-    HEVCDecoderConfigurationRecord scratch = m_hvcC->get_configuration();
+    HEVCDecoderConfigurationRecord scratch{};
     uint32_t cropped_w = 0, cropped_h = 0;
     ImageSize coded{};
     Error e = parse_sps_for_hvcC_configuration(nal_data, nal_size, &scratch,
