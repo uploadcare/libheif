@@ -3621,8 +3621,17 @@ Error Box_auxC::parse(BitstreamRange& range, const heif_security_limits* limits)
 
   m_aux_type = range.read_string();
 
-  while (!range.eof()) {
-    m_aux_subtypes.push_back(range.read8());
+  if (range.error()) {
+    return range.get_error();
+  }
+
+  const size_t size = range.get_remaining_bytes();
+  if (Error err = m_memory_handle.alloc(size, limits, "auxC subtype data")) {
+    return err;
+  }
+  m_aux_subtypes.resize(size);
+  if (size != 0) {
+    range.read(m_aux_subtypes.data(), size);
   }
 
   return range.get_error();

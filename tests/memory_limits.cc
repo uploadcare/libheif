@@ -128,6 +128,10 @@ std::vector<uint8_t> make_box(const std::string& kind, uint32_t count)
     if (kind == "av1C") {
       writer.write32(0x81000000);
     }
+    else if (kind == "auxC") {
+      writer.write32(0);
+      writer.write(std::string("urn:example:aux"));
+    }
     else if (is_icc) {
       writer.write32(fourcc(kind.c_str()));
     }
@@ -217,7 +221,7 @@ std::vector<uint8_t> make_mask_file(const std::vector<uint8_t>& region_data = {}
 TEST_CASE("box payload allocations respect block and total memory limits")
 {
   const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC",
-                                    "avcS", "avcP", "avcE", "vvcC");
+                                    "avcS", "avcP", "avcE", "vvcC", "auxC");
   INFO("box: " << kind);
   const auto data = make_box(kind, 32);
   const size_t amount = allocation_size(kind, 32);
@@ -287,7 +291,7 @@ TEST_CASE("box payload allocations respect block and total memory limits")
 TEST_CASE("parsed box storage remains charged until the box is destroyed")
 {
   const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC",
-                                    "avcS", "avcP", "avcE", "vvcC");
+                                    "avcS", "avcP", "avcE", "vvcC", "auxC");
   INFO("box: " << kind);
   const auto data = make_box(kind, 32);
   const size_t amount = allocation_size(kind, 32);
@@ -311,7 +315,7 @@ TEST_CASE("parsed box storage remains charged until the box is destroyed")
 TEST_CASE("empty box payloads fit a minimal memory budget")
 {
   const std::string kind = GENERATE("unkn", "jpgC", "av1C", "elst0", "elst1", "prof", "rICC", "hvcC",
-                                    "avcS", "avcP", "avcE", "vvcC");
+                                    "avcS", "avcP", "avcE", "vvcC", "auxC");
   INFO("box: " << kind);
   heif_security_limits limits = *heif_get_global_security_limits();
   limits.max_memory_block_size = 1;
