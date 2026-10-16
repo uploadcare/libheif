@@ -23,6 +23,7 @@
 
 #include "box.h"
 #include "error.h"
+#include "security_limits.h"
 #include <cstdint>
 #include <vector>
 #include <string>
@@ -97,6 +98,7 @@ protected:
 
 private:
   configuration m_configuration;
+  MemoryHandle m_memory_handle;
   std::vector< std::vector<uint8_t> > m_sps;
   std::vector< std::vector<uint8_t> > m_pps;
   std::vector< std::vector<uint8_t> > m_sps_ext;

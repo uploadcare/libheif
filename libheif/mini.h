@@ -23,6 +23,7 @@
 
 #include "libheif/heif.h"
 #include "box.h"
+#include "security_limits.h"
 
 #include <memory>
 #include <string>
@@ -225,6 +226,7 @@ private:
   // std::shared_ptr<Box_reve> m_tmap_reve;
   std::shared_ptr<Box_ndwt> m_tmap_ndwt;
 
+  MemoryHandle m_memory_handle;
   std::vector<uint8_t> m_alpha_item_codec_config;
   std::vector<uint8_t> m_gainmap_item_codec_config;
   std::vector<uint8_t> m_main_item_codec_config;

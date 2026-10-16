@@ -152,6 +152,9 @@ Error Box_vvcC::parse(BitstreamRange& range, const heif_security_limits* limits)
       }
 
       if (range.prepare_read(size)) {
+        if (auto err = m_memory_handle.alloc(size, limits, "vvcC NAL payload")) {
+          return err;
+        }
         nal_unit.resize(size);
         bool success = range.get_istream()->read((char*) nal_unit.data(), size);
         if (!success) {

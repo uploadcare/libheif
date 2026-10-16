@@ -44,17 +44,29 @@ Error Box_avcC::parse(BitstreamRange& range, const heif_security_limits* limits)
   uint8_t numOfSequenceParameterSets = (range.read8() & 0b00011111);
   for (int i = 0; i < numOfSequenceParameterSets; i++) {
     uint16_t sequenceParameterSetLength = range.read16();
+    if (sequenceParameterSetLength > range.get_remaining_bytes()) {
+      return {heif_error_Invalid_input, heif_suberror_End_of_data};
+    }
+    if (auto err = m_memory_handle.alloc(sequenceParameterSetLength, limits, "avcC SPS payload")) {
+      return err;
+    }
     std::vector<uint8_t> sps(sequenceParameterSetLength);
     range.read(sps.data(), sps.size());
-    m_sps.push_back(sps);
+    m_sps.push_back(std::move(sps));
   }
 
   uint8_t numOfPictureParameterSets = range.read8();
   for (int i = 0; i < numOfPictureParameterSets; i++) {
     uint16_t pictureParameterSetLength = range.read16();
+    if (pictureParameterSetLength > range.get_remaining_bytes()) {
+      return {heif_error_Invalid_input, heif_suberror_End_of_data};
+    }
+    if (auto err = m_memory_handle.alloc(pictureParameterSetLength, limits, "avcC PPS payload")) {
+      return err;
+    }
     std::vector<uint8_t> pps(pictureParameterSetLength);
     range.read(pps.data(), pps.size());
-    m_pps.push_back(pps);
+    m_pps.push_back(std::move(pps));
   }
 
   // See ISO/IEC 14496-15 2017 Section 5.3.3.1.2
@@ -68,9 +80,15 @@ Error Box_avcC::parse(BitstreamRange& range, const heif_security_limits* limits)
       uint8_t numOfSequenceParameterSetExt = range.read8();
       for (int i = 0; i < numOfSequenceParameterSetExt; i++) {
         uint16_t sequenceParameterSetExtLength = range.read16();
+        if (sequenceParameterSetExtLength > range.get_remaining_bytes()) {
+          return {heif_error_Invalid_input, heif_suberror_End_of_data};
+        }
+        if (auto err = m_memory_handle.alloc(sequenceParameterSetExtLength, limits, "avcC SPS extension payload")) {
+          return err;
+        }
         std::vector<uint8_t> sps_ext(sequenceParameterSetExtLength);
         range.read(sps_ext.data(), sps_ext.size());
-        m_sps_ext.push_back(sps_ext);
+        m_sps_ext.push_back(std::move(sps_ext));
       }
     }
   }

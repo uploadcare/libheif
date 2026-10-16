@@ -491,46 +491,72 @@ Error Box_mini::parse(BitstreamRange &range, const heif_security_limits *limits)
     }
   }
 
+  auto read_payload = [&](std::vector<uint8_t>& destination, uint32_t size, const char* description) -> Error {
+    if (auto err = m_memory_handle.alloc(size, limits, description)) {
+      return err;
+    }
+    destination = bits.read_bytes(size);
+    return Error::Ok;
+  };
+
   if (main_item_codec_config_size > 0)
   {
-    m_main_item_codec_config = bits.read_bytes(main_item_codec_config_size);
+    if (auto err = read_payload(m_main_item_codec_config, main_item_codec_config_size, "mini main codec config")) {
+      return err;
+    }
   }
 
   // Chunks
   if (m_alpha_flag && m_alpha_item_data_size > 0) {
     if (alpha_item_codec_config_size == 0) {
+      if (auto err = m_memory_handle.alloc(m_main_item_codec_config.size(), limits, "mini inherited alpha codec config")) {
+        return err;
+      }
       m_alpha_item_codec_config = m_main_item_codec_config;
     }
     else {
       // TODO: should we have a flag indicating that we have explicit config for alpha?
-      m_alpha_item_codec_config = bits.read_bytes(alpha_item_codec_config_size);
+      if (auto err = read_payload(m_alpha_item_codec_config, alpha_item_codec_config_size, "mini alpha codec config")) {
+        return err;
+      }
     }
   }
 
   if (m_hdr_flag && m_gainmap_flag && m_gainmap_item_data_size > 0)
   {
     if (gainmap_item_codec_config_size == 0) {
+      if (auto err = m_memory_handle.alloc(m_main_item_codec_config.size(), limits, "mini inherited gainmap codec config")) {
+        return err;
+      }
       m_gainmap_item_codec_config = m_main_item_codec_config;
     }
     else {
       // TODO: should we have a flag indicating that we have explicit config for the gain map?
-      m_gainmap_item_codec_config = bits.read_bytes(gainmap_item_codec_config_size);
+      if (auto err = read_payload(m_gainmap_item_codec_config, gainmap_item_codec_config_size, "mini gainmap codec config")) {
+        return err;
+      }
     }
   }
 
   if (m_icc_flag)
   {
-    m_icc_data = bits.read_bytes(icc_data_size);
+    if (auto err = read_payload(m_icc_data, icc_data_size, "mini ICC profile")) {
+      return err;
+    }
   }
 
   if (m_hdr_flag && m_gainmap_flag && m_tmap_icc_flag)
   {
-    m_tmap_icc_data = bits.read_bytes(tmap_icc_data_size);
+    if (auto err = read_payload(m_tmap_icc_data, tmap_icc_data_size, "mini tone-map ICC profile")) {
+      return err;
+    }
   }
 
   if (m_hdr_flag && m_gainmap_flag && gainmap_metadata_size > 0)
   {
-    m_gainmap_metadata = bits.read_bytes(gainmap_metadata_size);
+    if (auto err = read_payload(m_gainmap_metadata, gainmap_metadata_size, "mini gainmap metadata")) {
+      return err;
+    }
   }
 
   if (m_alpha_flag && m_alpha_item_data_size > 0)
@@ -1309,6 +1335,10 @@ static Error parse_codec_config_box(const std::vector<uint8_t>& config_bytes,
             "Codec config in MinimizedImageBox is too large"};
   }
 
+  MemoryHandle framed_memory_handle;
+  if (auto err = framed_memory_handle.alloc(total_size, limits, "mini framed codec config")) {
+    return err;
+  }
   std::vector<uint8_t> framed(total_size);
   framed[0] = (uint8_t)((total_size >> 24) & 0xff);
   framed[1] = (uint8_t)((total_size >> 16) & 0xff);
@@ -1398,7 +1428,7 @@ Error Box_mini::create_expanded_boxes(class HeifFile* file)
   auto ipco_box = std::make_shared<Box_ipco>();
   file->set_ipco_box(ipco_box);
 
-  if (get_main_item_codec_config().size() != 0) {
+  if (m_main_item_codec_config.size() != 0) {
     uint32_t config_type;
     if (infe_type == fourcc("av01")) {
       config_type = fourcc("av1C");
@@ -1412,7 +1442,7 @@ Error Box_mini::create_expanded_boxes(class HeifFile* file)
                    sstr.str());
     }
     std::shared_ptr<Box> main_item_codec_prop;
-    if (auto err = parse_codec_config_box(get_main_item_codec_config(), config_type, &main_item_codec_prop, file->get_security_limits())) {
+    if (auto err = parse_codec_config_box(m_main_item_codec_config, config_type, &main_item_codec_prop, file->get_security_limits())) {
       return err;
     }
     ipco_box->append_child_box(main_item_codec_prop); // entry 1
@@ -1444,15 +1474,21 @@ Error Box_mini::create_expanded_boxes(class HeifFile* file)
   ipco_box->append_child_box(colr); // entry 4
 
   if (get_icc_flag()) {
+    MemoryHandle icc_memory_handle;
+    if (auto err = icc_memory_handle.alloc(m_icc_data.size(), file->get_security_limits(), "mini expanded ICC profile")) {
+      return err;
+    }
+    std::vector<uint8_t> icc_data = m_icc_data;
     std::shared_ptr<Box_colr> colr_icc = std::make_shared<Box_colr>();
-    std::shared_ptr<color_profile_raw> icc = std::make_shared<color_profile_raw>(fourcc("prof"), get_icc_data());
+    std::shared_ptr<color_profile_raw> icc = std::make_shared<color_profile_raw>(fourcc("prof"), std::move(icc_data),
+                                                                           std::move(icc_memory_handle));
     colr_icc->set_color_profile(icc);
     ipco_box->append_child_box(colr_icc); // entry 5
   } else {
     ipco_box->append_child_box(std::make_shared<Box_free>()); // placeholder for entry 5
   }
 
-  if (get_alpha_item_codec_config().size() != 0) {
+  if (m_alpha_item_codec_config.size() != 0) {
     uint32_t config_type;
     if (infe_type == fourcc("av01")) {
       config_type = fourcc("av1C");
@@ -1466,7 +1502,7 @@ Error Box_mini::create_expanded_boxes(class HeifFile* file)
                    sstr.str());
     }
     std::shared_ptr<Box> alpha_item_codec_prop;
-    if (auto err = parse_codec_config_box(get_alpha_item_codec_config(), config_type, &alpha_item_codec_prop, file->get_security_limits())) {
+    if (auto err = parse_codec_config_box(m_alpha_item_codec_config, config_type, &alpha_item_codec_prop, file->get_security_limits())) {
       return err;
     }
     ipco_box->append_child_box(alpha_item_codec_prop); // entry 6
