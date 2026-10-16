@@ -1204,11 +1204,15 @@ Error HeifContext::interpret_heif_file_images()
     std::shared_ptr<RegionItem> region_item = std::make_shared<RegionItem>();
     region_item->item_id = id;
 
-    Result regionDataResult = m_heif_file->get_uncompressed_item_data(id);
+    MemoryHandle input_memory_handle;
+    Result regionDataResult = m_heif_file->get_uncompressed_item_data(id, &input_memory_handle);
     if (!regionDataResult) {
       return regionDataResult.error();
     }
-    region_item->parse(*regionDataResult, get_security_limits());
+    Error region_error = region_item->parse(*regionDataResult, get_security_limits());
+    if (region_error.sub_error_code == heif_suberror_Security_limit_exceeded) {
+      return region_error;
+    }
 
     if (iref_box) {
       std::vector<Box_iref::Reference> references = iref_box->get_references_from(id);
