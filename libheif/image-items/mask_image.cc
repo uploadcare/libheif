@@ -129,11 +129,12 @@ Result<std::shared_ptr<HeifPixelImage>> ImageItem_mask::decode_compressed_image(
 {
   std::shared_ptr<HeifPixelImage> img;
 
+  MemoryHandle input_memory_handle;
   std::vector<uint8_t> data;
 
   // image data, usually from 'mdat'
 
-  Error error = get_file()->append_data_from_iloc(get_id(), data);
+  Error error = get_file()->append_data_from_iloc(get_id(), data, &input_memory_handle);
   if (error) {
     return error;
   }

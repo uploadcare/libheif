@@ -38,6 +38,9 @@
 #include "codecs/jpeg_boxes.h"
 #include "codecs/jpeg2000_dec.h"
 #include "codecs/vvc_dec.h"
+#include "context.h"
+#include "image-items/mask_image.h"
+#include "region.h"
 #if WITH_UNCOMPRESSED_CODEC
 #include "codecs/uncompressed/unc_decoder.h"
 #endif
@@ -179,6 +182,33 @@ Error parse_box(const std::vector<uint8_t>& data, const heif_security_limits* li
   auto reader = std::make_shared<StreamReader_memory>(data.data(), data.size(), false);
   BitstreamRange range(reader, data.size());
   return Box::read(range, &box, limits);
+}
+
+std::vector<uint8_t> make_mask_file(const std::vector<uint8_t>& region_data = {})
+{
+  HeifFile file;
+  file.set_security_limits(heif_get_global_security_limits());
+  file.new_empty_file();
+  file.get_ftyp_box()->set_major_brand(fourcc("mif1"));
+  file.get_ftyp_box()->add_compatible_brand(fourcc("mif1"));
+  const std::vector<uint8_t> pixels(64 * 64, 0xAA);
+  auto mask_id = file.add_new_image(fourcc("mski"));
+  REQUIRE(mask_id);
+  file.append_iloc_data(*mask_id, pixels, 0);
+  file.set_primary_item_id(*mask_id);
+  REQUIRE(file.add_ispe_property(*mask_id, 64, 64, true) == Error::Ok);
+  auto mskC = std::make_shared<Box_mskC>();
+  mskC->set_bits_per_pixel(8);
+  file.add_property(*mask_id, mskC, true);
+  if (!region_data.empty()) {
+    auto region_id = file.add_infe(fourcc("rgan"), region_data.data(), region_data.size());
+    REQUIRE(region_id);
+    file.add_iref_reference(*region_id, fourcc("cdsc"), {*mask_id});
+  }
+  StreamWriter writer;
+  file.derive_box_versions();
+  file.write(writer);
+  return writer.get_data();
 }
 
 } // namespace
@@ -748,6 +778,79 @@ TEST_CASE("empty decoder configuration borrows cached input without another allo
   REQUIRE(*result == &decoder->get_data_extent().m_raw);
   REQUIRE(**result == std::vector<uint8_t>(32, 0xAA));
   REQUIRE(assembled.empty());
+}
+
+TEST_CASE("mask decoding counts input and pixel storage concurrently")
+{
+  const auto bytes = make_mask_file();
+  heif_security_limits limits = *heif_get_global_security_limits();
+  size_t pixel_bytes;
+  {
+    TotalMemoryTracker tracker(&limits);
+    HeifPixelImage pixels;
+    pixels.create(64, 64, heif_colorspace_monochrome, heif_chroma_monochrome);
+    REQUIRE(pixels.add_channel(heif_channel_Y, 64, 64, 8, &limits) == Error::Ok);
+    pixel_bytes = tracker.get_max_total_memory_used();
+  }
+  constexpr size_t input_bytes = 64 * 64;
+  const bool sufficient = GENERATE(false, true);
+  limits.max_memory_block_size = std::max(input_bytes, pixel_bytes);
+  limits.max_total_memory = input_bytes + pixel_bytes - (sufficient ? 0 : 1);
+  HeifContext context;
+  context.set_security_limits(&limits);
+  REQUIRE(context.read_from_memory(bytes.data(), bytes.size(), false) == Error::Ok);
+  auto image = context.get_primary_image(false);
+  REQUIRE(image);
+  heif_decoding_options options{};
+  {
+    auto result = image->decode_compressed_image(options, false, 0, 0, {});
+    if (sufficient) {
+      REQUIRE(result);
+      size_t stride;
+      const uint8_t* data = (*result)->get_channel_memory(heif_channel_Y, &stride);
+      REQUIRE(data[0] == 0xAA);
+      REQUIRE(data[63 * stride + 63] == 0xAA);
+    }
+    else {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+    }
+  }
+  context.get_security_limits()->max_memory_block_size = 0;
+  MemoryHandle probe;
+  REQUIRE(probe.alloc(limits.max_total_memory, context.get_security_limits(), "released mask input and pixels") == Error::Ok);
+}
+
+TEST_CASE("region opening counts input and parsed points concurrently")
+{
+  RegionItem region(0, 64, 64);
+  auto polygon = std::make_shared<RegionGeometry_Polygon>();
+  polygon->points = {{0, 0}, {63, 0}, {63, 63}};
+  region.add_region(polygon);
+  std::vector<uint8_t> payload;
+  REQUIRE(region.encode(payload) == Error::Ok);
+  const auto bytes = make_mask_file(payload);
+  const size_t point_bytes = polygon->points.size() * sizeof(RegionGeometry_Polygon::Point);
+  const bool sufficient = GENERATE(false, true);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = std::max(payload.size(), point_bytes);
+  limits.max_total_memory = payload.size() + point_bytes - (sufficient ? 0 : 1);
+  HeifContext context;
+  context.set_security_limits(&limits);
+  Error err = context.read_from_memory(bytes.data(), bytes.size(), false);
+  if (sufficient) {
+    REQUIRE(err == Error::Ok);
+    REQUIRE(context.get_primary_image(false)->get_region_item_ids().size() == 1);
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(payload.size(), context.get_security_limits(), "released region input") == Error::Ok);
+    REQUIRE(probe.alloc(1, context.get_security_limits(), "retained region points") != Error::Ok);
+  }
+  else {
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    context.get_security_limits()->max_memory_block_size = 0;
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(limits.max_total_memory, context.get_security_limits(), "released failed region input") == Error::Ok);
+  }
 }
 
 TEST_CASE("metadata and cached decoder input respect the remaining context budget")
