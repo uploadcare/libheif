@@ -44,6 +44,7 @@
 #include "error.h"
 #include "logging.h"
 #include "bitstream.h"
+#include "security_limits.h"
 
 #if !defined(__EMSCRIPTEN__) && !defined(_MSC_VER)
 // std::array<bool> is not supported on some older compilers.
@@ -378,6 +379,7 @@ public:
 protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;
 
+  MemoryHandle m_memory_handle;
   std::vector<uint8_t> m_data;
 };
 

@@ -76,6 +76,10 @@ Error Box_av1C::parse(BitstreamRange& range, const heif_security_limits* limits)
   }
 
   const size_t configOBUs_bytes = range.get_remaining_bytes();
+  if (auto err = m_memory_handle.alloc(configOBUs_bytes, limits, "av1C box config OBUs")) {
+    return err;
+  }
+
   m_config_OBUs.resize(configOBUs_bytes);
 
   if (!range.read(m_config_OBUs.data(), configOBUs_bytes)) {

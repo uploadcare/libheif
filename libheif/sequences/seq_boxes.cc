@@ -2449,6 +2449,19 @@ Error Box_elst::parse(BitstreamRange& range, const heif_security_limits* limits)
   uint32_t nEntries = range.read32();
   m_entries.clear();
 
+  const size_t entry_size = get_version() == 1 ? 20 : 12;
+  if (nEntries > range.get_remaining_bytes() / entry_size) {
+    return {heif_error_Invalid_input,
+            heif_suberror_End_of_data,
+            "elst box declares more entries than the box contains"};
+  }
+
+  if (auto err = m_memory_handle.alloc(nEntries, sizeof(Entry), limits, "elst box entries")) {
+    return err;
+  }
+
+  m_entries.reserve(nEntries);
+
   for (uint64_t i = 0; i < nEntries; i++) {
     if (range.eof()) {
       std::stringstream sstr;

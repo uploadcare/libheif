@@ -1269,6 +1269,10 @@ Error Box_other::parse(BitstreamRange& range, const heif_security_limits* limits
 
       len = static_cast<size_t>(len64);
 
+      if (auto err = m_memory_handle.alloc(len, limits, "unknown box payload")) {
+        return err;
+      }
+
       m_data.resize(len);
       range.read(m_data.data(), len);
     }
