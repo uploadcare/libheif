@@ -90,7 +90,8 @@ struct DataExtent
 
   Result<std::vector<uint8_t>*> read_data() const;
 
-  Result<std::vector<uint8_t>> read_data(uint64_t offset, uint64_t size) const;
+  Result<std::vector<uint8_t>> read_data(uint64_t offset, uint64_t size,
+                                       MemoryHandle* memory_handle = nullptr) const;
 };
 
 

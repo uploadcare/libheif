@@ -103,8 +103,14 @@ Result<std::vector<uint8_t>*> DataExtent::read_data() const
 }
 
 
-Result<std::vector<uint8_t>> DataExtent::read_data(uint64_t offset, uint64_t size) const
+Result<std::vector<uint8_t>> DataExtent::read_data(uint64_t offset, uint64_t size,
+                                                MemoryHandle* memory_handle) const
 {
+  MemoryHandle local_memory_handle;
+  if (!memory_handle) {
+    memory_handle = &local_memory_handle;
+  }
+  MemoryHandle reservation;
   std::vector<uint8_t> data;
 
   if (!m_raw.empty() || m_source == Source::Raw) {
@@ -119,6 +125,10 @@ Result<std::vector<uint8_t>> DataExtent::read_data(uint64_t offset, uint64_t siz
                    heif_suberror_End_of_data,
                    "Requested data range exceeds the cached extent buffer"};
     }
+    if (Error err = memory_handle->alloc(size, m_file ? m_file->get_security_limits() : nullptr,
+                                        "decoder input range")) {
+      return err;
+    }
     data.insert(data.begin(), m_raw.begin() + offset, m_raw.begin() + offset + size);
     return data;
   }
@@ -126,7 +136,7 @@ Result<std::vector<uint8_t>> DataExtent::read_data(uint64_t offset, uint64_t siz
     // TODO: cache data
 
     // image
-    Error err = m_file->append_data_from_iloc(m_item_id, data, offset, size);
+    Error err = m_file->append_data_from_iloc(m_item_id, data, offset, size, memory_handle);
     if (err) {
       return err;
     }
@@ -143,8 +153,14 @@ Result<std::vector<uint8_t>> DataExtent::read_data(uint64_t offset, uint64_t siz
                    "Requested data range exceeds the sample data"};
     }
 
+    if (Error err = reservation.alloc(size, m_file->get_security_limits(), "decoder input range")) {
+      return err;
+    }
     Error err = m_file->append_data_from_file_range(data, m_offset + offset, static_cast<uint32_t>(size));
     if (err) {
+      return err;
+    }
+    if (auto err = memory_handle->merge(std::move(reservation))) {
       return err;
     }
 
