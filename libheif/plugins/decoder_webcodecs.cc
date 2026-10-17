@@ -607,7 +607,7 @@ static struct heif_error webcodecs_decode_image_with_limits(void* decoder_raw,
   uint32_t w, h;      // visible size after applying the conformance window
   ImageSize coded{};  // size of the coded picture
   Error err = parse_sps_for_hvcC_configuration(sps_nal_unit.data.data(), sps_nal_unit.data.size(),
-                                               &config, &w, &h, &coded);
+                                               &config, &w, &h, &coded, limits);
   if (err != Error::Ok) {
     return {heif_error_Decoder_plugin_error,
             heif_suberror_Unspecified,

@@ -168,7 +168,10 @@ Error decode_hevc_aux_sei_messages(const std::vector<uint8_t>& data,
                                    std::vector<std::shared_ptr<SEIMessage>>& msgs);
 
 // Used for AVC, HEVC, and VVC.
-std::vector<uint8_t> remove_start_code_emulation(const uint8_t* sps, size_t size);
+// Keep memory_handle alive until the returned buffer is destroyed.
+Result<std::vector<uint8_t>> remove_start_code_emulation(const uint8_t* sps, size_t size,
+                                                        MemoryHandle& memory_handle,
+                                                        const heif_security_limits* limits);
 
 struct ImageSize;
 
@@ -178,6 +181,7 @@ struct ImageSize;
 Error parse_sps_for_hvcC_configuration(const uint8_t* sps, size_t size,
                                        HEVCDecoderConfigurationRecord* inout_config,
                                        uint32_t* width, uint32_t* height,
-                                       ImageSize* coded_size = nullptr);
+                                       ImageSize* coded_size = nullptr,
+                                       const heif_security_limits* limits = nullptr);
 
 #endif

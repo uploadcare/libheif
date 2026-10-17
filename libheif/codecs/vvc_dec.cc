@@ -65,8 +65,12 @@ int Decoder_VVC::get_chroma_bits_per_pixel() const
 }
 
 
-Result<std::optional<ImageSize>> Decoder_VVC::get_max_coded_image_size(const std::vector<uint8_t>& compressed_data) const
+Result<std::optional<ImageSize>> Decoder_VVC::get_max_coded_image_size(const std::vector<uint8_t>& compressed_data,
+                                                                     const heif_security_limits* limits) const
 {
+  if (!limits && get_data_extent().m_file) {
+    limits = get_data_extent().m_file->get_security_limits();
+  }
   // `compressed_data` is the combined configuration + bitstream buffer about to be
   // pushed to the decoder. Scan it for every SPS NAL unit and return the largest coded picture
   // size any of them declares. An SPS carried in the item data (not just in vvcC)
@@ -95,7 +99,7 @@ Result<std::optional<ImageSize>> Decoder_VVC::get_max_coded_image_size(const std
     uint32_t cropped_w = 0, cropped_h = 0;
     ImageSize coded{};
     Error e = parse_sps_for_vvcC_configuration(nal_data, nal_size, &scratch,
-                                               &cropped_w, &cropped_h, &coded);
+                                               &cropped_w, &cropped_h, &coded, limits);
     if (e) {
       // An SPS we cannot parse has an unknown coded size, so it must not reach
       // the decoder plugin.

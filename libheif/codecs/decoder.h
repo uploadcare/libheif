@@ -142,9 +142,10 @@ public:
   //
   // Returns nullopt when the codec exposes no coded size in this buffer (e.g. no
   // SPS/sequence-header/SOF present, as in a non-sync sequence frame).
-  // Returns Error only on a structurally invalid header.
+  // Returns Error on a structurally invalid header or an allocation limit failure.
   [[nodiscard]] virtual Result<std::optional<ImageSize>>
-  get_max_coded_image_size(const std::vector<uint8_t>& /*compressed_data*/) const
+  get_max_coded_image_size(const std::vector<uint8_t>& /*compressed_data*/,
+                           const heif_security_limits* /*limits*/ = nullptr) const
   {
     return std::optional<ImageSize>{};
   }
@@ -153,9 +154,10 @@ public:
   // codecs whose framing rules differ between configuration and sample data.
   [[nodiscard]] virtual Result<std::optional<ImageSize>>
   get_max_coded_image_size(const std::vector<uint8_t>& compressed_data,
-                           size_t /*configuration_data_size*/) const
+                           size_t /*configuration_data_size*/,
+                           const heif_security_limits* limits = nullptr) const
   {
-    return get_max_coded_image_size(compressed_data);
+    return get_max_coded_image_size(compressed_data, limits);
   }
 
   // Count coded pictures in the exact buffer sent to the plugin, including

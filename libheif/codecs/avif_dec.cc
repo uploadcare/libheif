@@ -54,7 +54,8 @@ Error Decoder_AVIF::prepare_compressed_data_for_decoding(std::vector<uint8_t>& c
 
 
 Result<std::optional<ImageSize>> Decoder_AVIF::get_max_coded_image_size(const std::vector<uint8_t>& compressed_data,
-                                                                       size_t configuration_data_size) const
+                                                                       size_t configuration_data_size,
+                                                                       const heif_security_limits*) const
 {
   // The AV1 sequence header carries the coded frame size
   // (max_frame_width_minus_1 / max_frame_height_minus_1). Per the AVIF

@@ -671,9 +671,15 @@ Error decode_hevc_aux_sei_messages(const std::vector<uint8_t>& data,
 
 
 // Used for AVC, HEVC, and VVC.
-std::vector<uint8_t> remove_start_code_emulation(const uint8_t* sps, size_t size)
+Result<std::vector<uint8_t>> remove_start_code_emulation(const uint8_t* sps, size_t size,
+                                                        MemoryHandle& memory_handle,
+                                                        const heif_security_limits* limits)
 {
+  if (Error err = memory_handle.alloc(size, limits, "unescaped codec header")) {
+    return err;
+  }
   std::vector<uint8_t> out_data;
+  out_data.reserve(size);
 
   for (size_t i = 0; i < size; i++) {
     if (i + 2 < size &&
@@ -696,14 +702,19 @@ std::vector<uint8_t> remove_start_code_emulation(const uint8_t* sps, size_t size
 Error parse_sps_for_hvcC_configuration(const uint8_t* sps, size_t size,
                                        HEVCDecoderConfigurationRecord* config,
                                        uint32_t* width, uint32_t* height,
-                                       ImageSize* coded_size)
+                                       ImageSize* coded_size,
+                                       const heif_security_limits* limits)
 {
   // remove start-code emulation bytes from SPS header stream
 
-  std::vector<uint8_t> sps_no_emul = remove_start_code_emulation(sps, size);
+  MemoryHandle memory_handle;
+  auto sps_no_emul = remove_start_code_emulation(sps, size, memory_handle, limits);
+  if (!sps_no_emul) {
+    return sps_no_emul.error();
+  }
 
-  sps = sps_no_emul.data();
-  size = sps_no_emul.size();
+  sps = sps_no_emul->data();
+  size = sps_no_emul->size();
 
 
   BitReader reader(sps, size);

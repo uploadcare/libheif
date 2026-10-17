@@ -630,7 +630,7 @@ Error Decoder::decode_sequence_frame_from_compressed_data(bool upload_configurat
   // an SPS may sit in the item data rather than only in the config record, so we
   // scan the whole buffer that is about to be pushed. Codecs that expose no coded
   // size return nullopt and skip the check.
-  auto codedSize = get_max_coded_image_size(compressed_data, configuration_data_size);
+  auto codedSize = get_max_coded_image_size(compressed_data, configuration_data_size, limits);
   if (codedSize.is_error()) {
     return codedSize.error();
   }
