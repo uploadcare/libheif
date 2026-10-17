@@ -76,9 +76,10 @@ Result<std::optional<ImageSize>> Decoder_VVC::get_max_coded_image_size(const std
   uint32_t max_width = 0;
   uint32_t max_height = 0;
 
-  for (const auto& nal : split_nal_units_4byte_length_prefixed(compressed_data.data(), compressed_data.size())) {
-    const uint8_t* nal_data = nal.first;
-    size_t nal_size = nal.second;
+  size_t offset = 0;
+  while (auto nal = next_nal_unit_4byte_length_prefixed(compressed_data.data(), compressed_data.size(), offset)) {
+    const uint8_t* nal_data = nal->first;
+    size_t nal_size = nal->second;
 
     // VVC NAL unit header (2 bytes): forbidden_zero_bit(1), nuh_reserved_zero_bit(1),
     // nuh_layer_id(6), nal_unit_type(5), nuh_temporal_id_plus1(3)

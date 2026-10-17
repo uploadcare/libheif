@@ -45,17 +45,18 @@ struct ImageSize
 };
 
 
-// Split a buffer of NAL units, each prefixed by a 4-byte big-endian length, into
-// non-owning (pointer, length) spans that point into `data`. Parsing stops at the
-// first malformed length (a prefix or payload that runs past the end of the
-// buffer); NAL units already collected are still returned.
+// Read the next nonempty NAL unit prefixed by a 4-byte big-endian length.
+// Returns a non-owning (pointer, length) span into `data`, without allocating.
+// Initialize `offset` to zero; each call advances it past the returned unit.
+// At the end or the first malformed length, consumes the remaining input and
+// returns nullopt. The input buffer must remain alive while using its spans.
 //
 // This mirrors exactly how the AVC/HEVC/VVC decoder plugins walk the combined
 // configuration+bitstream buffer they are handed (see e.g. decoder_libde265.cc),
 // so the returned spans are the same NAL units the codec will actually see. It is
 // used to scan for in-band SPS NAL units when enforcing the security limits.
-std::vector<std::pair<const uint8_t*, size_t>>
-split_nal_units_4byte_length_prefixed(const uint8_t* data, size_t size);
+std::optional<std::pair<const uint8_t*, size_t>>
+next_nal_unit_4byte_length_prefixed(const uint8_t* data, size_t size, size_t& offset);
 
 // Scan the complete length-prefixed buffer that will be submitted to a NAL
 // decoder. Invalid framing is an error, not a partial picture count.

@@ -70,9 +70,10 @@ Result<std::optional<ImageSize>> Decoder_HEVC::get_max_coded_image_size(const st
   uint32_t max_width = 0;
   uint32_t max_height = 0;
 
-  for (const auto& nal : split_nal_units_4byte_length_prefixed(compressed_data.data(), compressed_data.size())) {
-    const uint8_t* nal_data = nal.first;
-    size_t nal_size = nal.second;
+  size_t offset = 0;
+  while (auto nal = next_nal_unit_4byte_length_prefixed(compressed_data.data(), compressed_data.size(), offset)) {
+    const uint8_t* nal_data = nal->first;
+    size_t nal_size = nal->second;
 
     // HEVC NAL unit header (2 bytes): forbidden_zero_bit(1), nal_unit_type(6), ...
     if (nal_size < 2) {
