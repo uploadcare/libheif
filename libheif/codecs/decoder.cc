@@ -341,31 +341,29 @@ Decoder::~Decoder()
 }
 
 
-std::vector<std::pair<const uint8_t*, size_t>>
-split_nal_units_4byte_length_prefixed(const uint8_t* data, size_t size)
+std::optional<std::pair<const uint8_t*, size_t>>
+next_nal_unit_4byte_length_prefixed(const uint8_t* data, size_t size, size_t& offset)
 {
-  std::vector<std::pair<const uint8_t*, size_t>> units;
-
-  size_t ptr = 0;
-  while (ptr + 4 <= size) {
-    uint32_t nal_size = (uint32_t(data[ptr]) << 24) | (uint32_t(data[ptr + 1]) << 16) |
-                        (uint32_t(data[ptr + 2]) << 8) | uint32_t(data[ptr + 3]);
-    ptr += 4;
+  while (offset < size && size - offset >= 4) {
+    uint32_t nal_size = (uint32_t(data[offset]) << 24) | (uint32_t(data[offset + 1]) << 16) |
+                        (uint32_t(data[offset + 2]) << 8) | uint32_t(data[offset + 3]);
+    offset += 4;
 
     // A length that runs past the end of the buffer means the stream is
     // malformed; stop rather than read out of bounds.
-    if (nal_size > size - ptr) {
+    if (nal_size > size - offset) {
       break;
     }
 
+    const uint8_t* nal_data = data + offset;
+    offset += nal_size;
     if (nal_size > 0) {
-      units.emplace_back(data + ptr, (size_t) nal_size);
+      return std::pair<const uint8_t*, size_t>{nal_data, nal_size};
     }
-
-    ptr += nal_size;
   }
 
-  return units;
+  offset = size;
+  return std::nullopt;
 }
 
 

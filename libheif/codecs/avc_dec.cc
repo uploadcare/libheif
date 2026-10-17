@@ -67,9 +67,10 @@ Result<std::optional<ImageSize>> Decoder_AVC::get_max_coded_image_size(const std
   uint32_t max_width = 0;
   uint32_t max_height = 0;
 
-  for (const auto& nal : split_nal_units_4byte_length_prefixed(compressed_data.data(), compressed_data.size())) {
-    const uint8_t* nal_data = nal.first;
-    size_t nal_size = nal.second;
+  size_t offset = 0;
+  while (auto nal = next_nal_unit_4byte_length_prefixed(compressed_data.data(), compressed_data.size(), offset)) {
+    const uint8_t* nal_data = nal->first;
+    size_t nal_size = nal->second;
 
     // AVC NAL unit header (1 byte): forbidden_zero_bit(1), nal_ref_idc(2), nal_unit_type(5)
     if (nal_size < 1) {
