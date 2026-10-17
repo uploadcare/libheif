@@ -1387,21 +1387,23 @@ Error Box_snuc::parse(BitstreamRange& range, const heif_security_limits* limits)
             "snuc image dimensions exceed security limit."};
   }
 
-  Error err = m_memory_handle.alloc(num_pixels, 2 * sizeof(float), limits, "snuc box");
+  auto data = std::make_shared<SensorNonUniformityCorrection::Data>();
+  Error err = data->memory_handle.alloc(num_pixels, 2 * sizeof(float), limits, "snuc box");
   if (err) {
     return err;
   }
 
-  m_nuc.nuc_gains.resize(num_pixels);
+  data->nuc_gains.resize(num_pixels);
   for (uint64_t i = 0; i < num_pixels; i++) {
-    m_nuc.nuc_gains[i] = range.read_float32();
+    data->nuc_gains[i] = range.read_float32();
   }
 
-  m_nuc.nuc_offsets.resize(num_pixels);
+  data->nuc_offsets.resize(num_pixels);
   for (uint64_t i = 0; i < num_pixels; i++) {
-    m_nuc.nuc_offsets[i] = range.read_float32();
+    data->nuc_offsets[i] = range.read_float32();
   }
 
+  m_nuc.data = std::move(data);
   return range.get_error();
 }
 
@@ -1443,11 +1445,11 @@ Error Box_snuc::write(StreamWriter& writer) const
   writer.write32(m_nuc.image_width);
   writer.write32(m_nuc.image_height);
 
-  for (float gain : m_nuc.nuc_gains) {
+  for (float gain : m_nuc.data->nuc_gains) {
     writer.write_float32(gain);
   }
 
-  for (float offset : m_nuc.nuc_offsets) {
+  for (float offset : m_nuc.data->nuc_offsets) {
     writer.write_float32(offset);
   }
 

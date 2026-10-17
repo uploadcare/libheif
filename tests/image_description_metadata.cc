@@ -88,8 +88,10 @@ struct MetadataFixture
     nuc.nuc_is_applied = true;
     nuc.image_width = 4;
     nuc.image_height = 2;
-    nuc.nuc_gains.assign(8, 1.5f);
-    nuc.nuc_offsets.assign(8, 0.25f);
+    auto data = std::make_shared<SensorNonUniformityCorrection::Data>();
+    data->nuc_gains.assign(8, 1.5f);
+    data->nuc_offsets.assign(8, 0.25f);
+    nuc.data = std::move(data);
   }
 };
 
@@ -207,7 +209,8 @@ static void check_metadata(const std::shared_ptr<HeifPixelImage>& img,
   REQUIRE(img->has_sensor_nuc());
   REQUIRE(img->get_sensor_nuc().size() == 1);
   REQUIRE(img->get_sensor_nuc()[0].image_width == fix.nuc.image_width);
-  REQUIRE(img->get_sensor_nuc()[0].nuc_gains == fix.nuc.nuc_gains);
+  REQUIRE(img->get_sensor_nuc()[0].data->nuc_gains == fix.nuc.data->nuc_gains);
+  REQUIRE(img->get_sensor_nuc()[0].data->nuc_offsets == fix.nuc.data->nuc_offsets);
 
   REQUIRE(img->has_chroma_location());
   REQUIRE(img->get_chroma_location() == fix.chroma_location);

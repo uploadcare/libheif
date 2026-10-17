@@ -30,6 +30,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <utility>
 
 int heif_item_get_properties_of_type(const heif_context* context,
                                      heif_item_id id,
@@ -895,8 +896,10 @@ heif_error heif_image_add_sensor_nuc(heif_image* image,
   nuc.image_height = image_height;
 
   size_t num_pixels = size_t{image_width} * image_height;
-  nuc.nuc_gains.assign(nuc_gains, nuc_gains + num_pixels);
-  nuc.nuc_offsets.assign(nuc_offsets, nuc_offsets + num_pixels);
+  auto data = std::make_shared<SensorNonUniformityCorrection::Data>();
+  data->nuc_gains.assign(nuc_gains, nuc_gains + num_pixels);
+  data->nuc_offsets.assign(nuc_offsets, nuc_offsets + num_pixels);
+  nuc.data = std::move(data);
 
   image->image->add_sensor_nuc(nuc);
 
@@ -975,12 +978,12 @@ heif_error heif_image_get_sensor_nuc_data(const heif_image* image,
 
   size_t num_pixels = size_t{n.image_width} * n.image_height;
 
-  if (out_nuc_gains && !n.nuc_gains.empty()) {
-    std::copy(n.nuc_gains.begin(), n.nuc_gains.begin() + num_pixels, out_nuc_gains);
+  if (out_nuc_gains && !n.data->nuc_gains.empty()) {
+    std::copy(n.data->nuc_gains.begin(), n.data->nuc_gains.begin() + num_pixels, out_nuc_gains);
   }
 
-  if (out_nuc_offsets && !n.nuc_offsets.empty()) {
-    std::copy(n.nuc_offsets.begin(), n.nuc_offsets.begin() + num_pixels, out_nuc_offsets);
+  if (out_nuc_offsets && !n.data->nuc_offsets.empty()) {
+    std::copy(n.data->nuc_offsets.begin(), n.data->nuc_offsets.begin() + num_pixels, out_nuc_offsets);
   }
 
   return heif_error_success;

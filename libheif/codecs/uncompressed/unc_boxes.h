@@ -460,7 +460,6 @@ public:
 protected:
   Error parse(BitstreamRange& range, const heif_security_limits* limits) override;
 
-  MemoryHandle m_memory_handle;
   SensorNonUniformityCorrection m_nuc;
 };
 
