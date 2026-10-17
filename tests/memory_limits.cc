@@ -37,6 +37,7 @@
 #include "codecs/jpeg_dec.h"
 #include "codecs/jpeg_boxes.h"
 #include "codecs/jpeg2000_dec.h"
+#include "codecs/jpeg2000_boxes.h"
 #include "codecs/vvc_dec.h"
 #include "context.h"
 #include "image-items/mask_image.h"
@@ -59,6 +60,8 @@
 #include <vector>
 
 namespace {
+
+struct IpmaTable : Box_ipma { using Box_ipma::Entry; };
 
 std::vector<uint8_t> make_box(const std::string& kind, uint32_t count)
 {
@@ -107,6 +110,66 @@ std::vector<uint8_t> make_box(const std::string& kind, uint32_t count)
       }
       writer.write16(1);
       writer.write16(0);
+    }
+  }
+  else if (kind == "cdef" || kind == "j2kL") {
+    writer.write16(static_cast<uint16_t>(count));
+    for (uint32_t i = 0; i < count; i++) {
+      writer.write16(static_cast<uint16_t>(i));
+      if (kind == "cdef") {
+        writer.write16(0);
+      }
+      else {
+        writer.write8(0);
+      }
+      writer.write16(static_cast<uint16_t>(i + 1));
+    }
+  }
+  else if (kind == "ipma" || kind == "ipma1") {
+    writer.write32(kind == "ipma1" ? 0x01000001 : 0);
+    writer.write32(count);
+    for (uint32_t i = 0; i < count; i++) {
+      if (kind == "ipma1") writer.write32(0x10000 + i);
+      else writer.write16(static_cast<uint16_t>(i + 1));
+      writer.write8(2);
+      if (kind == "ipma1") {
+        writer.write16(0x8001);
+        writer.write16(0x8002);
+      }
+      else {
+        writer.write8(0x81);
+        writer.write8(0x82);
+      }
+    }
+  }
+  else if (kind == "cpat" || kind == "splz" || kind == "sbpm") {
+    writer.write32(0);
+    if (kind != "cpat") {
+      writer.write32(count ? 2 : 0);
+      if (count) {
+        writer.write32(0);
+        writer.write32(1);
+      }
+    }
+    if (kind == "sbpm") {
+      writer.write8(0);
+      writer.write32(count);
+      writer.write32(count);
+      writer.write32(count);
+      for (uint32_t i = 0; i < count; i++) writer.write32(i);
+      for (uint32_t i = 0; i < count; i++) writer.write32(i);
+      for (uint32_t i = 0; i < count; i++) {
+        writer.write32(i);
+        writer.write32(i + 1);
+      }
+    }
+    else {
+      writer.write16(static_cast<uint16_t>(count));
+      writer.write16(1);
+      for (uint32_t i = 0; i < count; i++) {
+        if (kind == "cpat") writer.write32(0);
+        writer.write_float32(1);
+      }
     }
   }
   else if (kind == "hvcC") {
@@ -326,6 +389,180 @@ TEST_CASE("empty box payloads fit a minimal memory budget")
   REQUIRE(parse_box(make_box(kind, 0), &limits, box) == Error::Ok);
 }
 
+
+TEST_CASE("parsed box tables enforce allocation and retained total budgets")
+{
+  const std::string kind = GENERATE("cpat", "splz", "sbpm", "cdef", "j2kL", "ipma", "ipma1");
+#if !WITH_UNCOMPRESSED_CODEC
+  if (kind == "cpat" || kind == "splz" || kind == "sbpm") {
+    SKIP("Uncompressed codec is not enabled");
+  }
+#endif
+  INFO("box: " << kind);
+  constexpr uint32_t count = 4;
+  size_t largest_allocation;
+  size_t total_allocation;
+  if (kind == "cpat") {
+    largest_allocation = total_allocation = count * sizeof(BayerPatternPixelCmpd);
+  }
+  else if (kind == "splz") {
+    largest_allocation = count * sizeof(float);
+    total_allocation = largest_allocation + 2 * sizeof(uint32_t);
+  }
+  else if (kind == "sbpm") {
+    largest_allocation = count * sizeof(SensorBadPixelsMap::BadPixelCoordinate);
+    total_allocation = largest_allocation + (2 + 2 * count) * sizeof(uint32_t);
+  }
+  else if (kind == "cdef") {
+    largest_allocation = total_allocation = count * sizeof(Box_cdef::Channel);
+  }
+  else if (kind == "j2kL") {
+    largest_allocation = total_allocation = count * sizeof(Box_j2kL::Layer);
+  }
+  else {
+    largest_allocation = count * sizeof(IpmaTable::Entry);
+    total_allocation = largest_allocation + count * 2 * sizeof(Box_ipma::PropertyAssociation);
+  }
+  const auto data = make_box(kind, count);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = largest_allocation;
+  limits.max_total_memory = total_allocation;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+
+  SECTION("exact block and total budgets accept the table") {
+    REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+    if (kind == "j2kL") {
+      auto layers = std::dynamic_pointer_cast<Box_j2kL>(box);
+      REQUIRE(layers);
+      REQUIRE(layers->get_layers().size() == count);
+      REQUIRE(layers->get_layers().back().decode_layers == count);
+    }
+    else {
+      StreamWriter writer;
+      REQUIRE(box->write(writer) == Error::Ok);
+      REQUIRE(writer.get_data() == data);
+    }
+  }
+
+  SECTION("the largest individual vector must fit the block limit") {
+    limits.max_memory_block_size--;
+    limits.max_total_memory = 0;
+    Error err = parse_box(data, &limits, box);
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+
+  SECTION("all retained vectors must fit the total limit") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory--;
+    Error err = parse_box(data, &limits, box);
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+
+  SECTION("retained boxes share a budget and destruction releases it") {
+    limits.max_total_memory = 2 * total_allocation;
+    std::shared_ptr<Box> second, third;
+    REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+    REQUIRE(parse_box(data, &limits, second) == Error::Ok);
+    Error err = parse_box(data, &limits, third);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    box.reset();
+    REQUIRE(parse_box(data, &limits, third) == Error::Ok);
+  }
+
+  SECTION("disabled limits accept the table") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = 0;
+    REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+  }
+
+  SECTION("truncated first tables fail before reserving declared storage") {
+    auto truncated = data;
+    if (kind == "splz" || kind == "sbpm") {
+      truncated.resize(19); // full header, component count, incomplete first component
+    }
+    else if (kind == "ipma" || kind == "ipma1") {
+      truncated.resize(18); // full header, entry count, incomplete first entry
+    }
+    else {
+      truncated.pop_back();
+    }
+    const auto size = static_cast<uint32_t>(truncated.size());
+    truncated[0] = static_cast<uint8_t>(size >> 24);
+    truncated[1] = static_cast<uint8_t>(size >> 16);
+    truncated[2] = static_cast<uint8_t>(size >> 8);
+    truncated[3] = static_cast<uint8_t>(size);
+    Error err = parse_box(truncated, &limits, box);
+    REQUIRE(err.error_code == heif_error_Invalid_input);
+    REQUIRE(err.sub_error_code == heif_suberror_End_of_data);
+    REQUIRE(tracker.get_max_total_memory_used() == 0);
+  }
+}
+
+TEST_CASE("empty parsed box tables fit a minimal memory budget")
+{
+  const std::string kind = GENERATE("sbpm", "cdef", "j2kL", "ipma", "ipma1");
+#if !WITH_UNCOMPRESSED_CODEC
+  if (kind == "sbpm") {
+    SKIP("Uncompressed codec is not enabled");
+  }
+#endif
+  INFO("box: " << kind);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 1;
+  limits.max_total_memory = 1;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  REQUIRE(parse_box(make_box(kind, 0), &limits, box) == Error::Ok);
+}
+
+TEST_CASE("merged ipma tables account copies alongside their original storage")
+{
+  constexpr size_t entry_count = 4;
+  const size_t source_count = GENERATE(1, 3);
+  const size_t entry_bytes = entry_count * sizeof(IpmaTable::Entry);
+  const size_t box_bytes = entry_bytes + entry_count * 2 * sizeof(Box_ipma::PropertyAssociation);
+  const std::string failure = GENERATE("none", "block", "total");
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = entry_bytes * (1 + source_count);
+  limits.max_total_memory = box_bytes * (1 + 2 * source_count);
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> first;
+  std::vector<std::shared_ptr<Box_ipma>> sources;
+  const auto data = make_box("ipma", entry_count);
+  REQUIRE(parse_box(data, &limits, first) == Error::Ok);
+  for (size_t i = 0; i < source_count; i++) {
+    std::shared_ptr<Box> box;
+    REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+    auto source = std::dynamic_pointer_cast<Box_ipma>(box);
+    REQUIRE(source);
+    sources.push_back(std::move(source));
+  }
+  auto* first_ipma = dynamic_cast<Box_ipma*>(first.get());
+  REQUIRE(first_ipma);
+  if (failure == "block") limits.max_memory_block_size--;
+  if (failure == "total") limits.max_total_memory--;
+  Error err = first_ipma->insert_entries_from_other_ipma_boxes(sources, &limits);
+  if (failure == "none") {
+    REQUIRE(err == Error::Ok);
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(1, &limits, "retained merged entries") != Error::Ok);
+    first.reset();
+    limits.max_memory_block_size = 0;
+    REQUIRE(probe.alloc((1 + source_count) * box_bytes, &limits, "released original and merged entries") == Error::Ok);
+  }
+  else {
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    StreamWriter writer;
+    REQUIRE(first->write(writer) == Error::Ok);
+    REQUIRE(writer.get_data() == data);
+    MemoryHandle probe;
+    limits.max_memory_block_size = 0;
+    REQUIRE(probe.alloc(limits.max_total_memory - (1 + source_count) * box_bytes, &limits, "released failed merge reservation") == Error::Ok);
+  }
+}
 
 TEST_CASE("truncated edit lists fail before reserving their declared storage")
 {
@@ -798,9 +1035,10 @@ TEST_CASE("mask decoding counts input and pixel storage concurrently")
     pixel_bytes = tracker.get_max_total_memory_used();
   }
   constexpr size_t input_bytes = 64 * 64;
+  const size_t table_bytes = sizeof(IpmaTable::Entry) + 2 * sizeof(Box_ipma::PropertyAssociation);
   const bool sufficient = GENERATE(false, true);
   limits.max_memory_block_size = std::max(input_bytes, pixel_bytes);
-  limits.max_total_memory = input_bytes + pixel_bytes - (sufficient ? 0 : 1);
+  limits.max_total_memory = table_bytes + input_bytes + pixel_bytes - (sufficient ? 0 : 1);
   HeifContext context;
   context.set_security_limits(&limits);
   REQUIRE(context.read_from_memory(bytes.data(), bytes.size(), false) == Error::Ok);
@@ -823,7 +1061,7 @@ TEST_CASE("mask decoding counts input and pixel storage concurrently")
   }
   context.get_security_limits()->max_memory_block_size = 0;
   MemoryHandle probe;
-  REQUIRE(probe.alloc(limits.max_total_memory, context.get_security_limits(), "released mask input and pixels") == Error::Ok);
+  REQUIRE(probe.alloc(limits.max_total_memory - table_bytes, context.get_security_limits(), "released mask input and pixels") == Error::Ok);
 }
 
 TEST_CASE("region opening counts input and parsed points concurrently")
@@ -836,10 +1074,11 @@ TEST_CASE("region opening counts input and parsed points concurrently")
   REQUIRE(region.encode(payload) == Error::Ok);
   const auto bytes = make_mask_file(payload);
   const size_t point_bytes = polygon->points.size() * sizeof(RegionGeometry_Polygon::Point);
+  const size_t table_bytes = sizeof(IpmaTable::Entry) + 2 * sizeof(Box_ipma::PropertyAssociation);
   const bool sufficient = GENERATE(false, true);
   heif_security_limits limits = *heif_get_global_security_limits();
   limits.max_memory_block_size = std::max(payload.size(), point_bytes);
-  limits.max_total_memory = payload.size() + point_bytes - (sufficient ? 0 : 1);
+  limits.max_total_memory = table_bytes + payload.size() + point_bytes - (sufficient ? 0 : 1);
   HeifContext context;
   context.set_security_limits(&limits);
   Error err = context.read_from_memory(bytes.data(), bytes.size(), false);
@@ -854,7 +1093,7 @@ TEST_CASE("region opening counts input and parsed points concurrently")
     REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
     context.get_security_limits()->max_memory_block_size = 0;
     MemoryHandle probe;
-    REQUIRE(probe.alloc(limits.max_total_memory, context.get_security_limits(), "released failed region input") == Error::Ok);
+    REQUIRE(probe.alloc(limits.max_total_memory - table_bytes, context.get_security_limits(), "released failed region input") == Error::Ok);
   }
 }
 
