@@ -41,6 +41,7 @@
 #include "codecs/vvc_dec.h"
 #include "context.h"
 #include "image-items/mask_image.h"
+#include "image-items/tiled.h"
 #include "region.h"
 #if WITH_UNCOMPRESSED_CODEC
 #include "codecs/uncompressed/unc_decoder.h"
@@ -337,6 +338,215 @@ std::vector<uint8_t> make_mask_file(const std::vector<uint8_t>& region_data = {}
 
 } // namespace
 
+
+TEST_CASE("tili opening enforces context limits on its offset table")
+{
+  HeifFile file;
+  file.set_security_limits(heif_get_global_security_limits());
+  file.new_empty_file();
+  file.get_ftyp_box()->set_major_brand(fourcc("mif1"));
+  file.get_ftyp_box()->add_compatible_brand(fourcc("mif1"));
+  auto id = file.add_new_image(fourcc("tili"));
+  REQUIRE(id);
+  file.set_primary_item_id(*id);
+  REQUIRE(file.add_ispe_property(*id, 64, 64, true) == Error::Ok);
+  auto config = std::make_shared<Box_tilC>();
+  heif_tiled_image_parameters params = config->get_parameters();
+  params.tile_width = params.tile_height = 8;
+  params.compression_format_fourcc = fourcc("jpeg");
+  config->set_parameters(params);
+  file.add_property(*id, config, true);
+  file.append_iloc_data(*id, std::vector<uint8_t>(64 * 8, 0), 0);
+  StreamWriter writer;
+  file.derive_box_versions();
+  file.write(writer);
+  const auto bytes = writer.get_data();
+  heif_security_limits limits = *heif_get_global_security_limits();
+
+  SECTION("the context tile count applies before allocating the table") {
+    limits.max_number_of_tiles = 63;
+  }
+  SECTION("the table must fit the block limit") {
+    limits.max_memory_block_size = 64;
+    limits.max_total_memory = 0;
+  }
+  SECTION("the table must fit the total limit") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = 128;
+  }
+
+  HeifContext context;
+  context.set_security_limits(&limits);
+  REQUIRE(context.read_from_memory(bytes.data(), bytes.size(), false) == Error::Ok);
+  auto image = context.get_primary_image(true);
+  REQUIRE(image);
+  REQUIRE(image->get_item_error().sub_error_code == heif_suberror_Security_limit_exceeded);
+}
+
+
+TEST_CASE("tili offset tables retain checked memory reservations")
+{
+  Box_tilC config;
+  auto params = config.get_parameters();
+  params.image_width = params.image_height = 16;
+  params.tile_width = params.tile_height = 8;
+  heif_security_limits limits = *heif_get_global_security_limits();
+  size_t table_bytes;
+  {
+    TotalMemoryTracker tracker(&limits);
+    TiledHeader header;
+    REQUIRE(header.set_parameters(params, &limits) == Error::Ok);
+    table_bytes = tracker.get_max_total_memory_used();
+    REQUIRE(table_bytes >= 4 * sizeof(uint64_t));
+  }
+  limits.max_memory_block_size = table_bytes;
+  limits.max_total_memory = table_bytes;
+  TotalMemoryTracker tracker(&limits);
+  auto header = std::make_unique<TiledHeader>();
+
+  SECTION("exact budgets accept initialized entries and retain the table") {
+    REQUIRE(header->set_parameters(params, &limits) == Error::Ok);
+    REQUIRE(header->get_num_tiles() == 4);
+    for (uint32_t i = 0; i < 4; i++) {
+      REQUIRE_FALSE(header->is_tile_offset_known(i));
+      REQUIRE(header->get_tile_size(i) == 0);
+    }
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(1, &limits, "retained offset table") != Error::Ok);
+  }
+
+  SECTION("block limits reject the whole table independently of total limits") {
+    limits.max_memory_block_size = table_bytes - 1;
+    limits.max_total_memory = 0;
+    Error err = header->set_parameters(params, &limits);
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    REQUIRE(header->get_num_tiles() == 0);
+  }
+
+  SECTION("total limits reject the table independently of block limits") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = table_bytes - 1;
+    REQUIRE(header->set_parameters(params, &limits).sub_error_code == heif_suberror_Security_limit_exceeded);
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(limits.max_total_memory, &limits, "failed table allocation") == Error::Ok);
+  }
+
+  SECTION("multiple tables share the budget and destruction releases it") {
+    limits.max_total_memory = 2 * table_bytes;
+    TiledHeader second, third;
+    REQUIRE(header->set_parameters(params, &limits) == Error::Ok);
+    REQUIRE(second.set_parameters(params, &limits) == Error::Ok);
+    REQUIRE(third.set_parameters(params, &limits).sub_error_code == heif_suberror_Security_limit_exceeded);
+    header.reset();
+    REQUIRE(third.set_parameters(params, &limits) == Error::Ok);
+  }
+
+  SECTION("moving the header transfers its retained reservation") {
+    REQUIRE(header->set_parameters(params, &limits) == Error::Ok);
+    {
+      TiledHeader moved = std::move(*header);
+      header.reset();
+      REQUIRE(moved.get_num_tiles() == 4);
+      MemoryHandle probe;
+      REQUIRE(probe.alloc(1, &limits, "moved offset table") != Error::Ok);
+    }
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(table_bytes, &limits, "destroyed moved offset table") == Error::Ok);
+  }
+
+  SECTION("disabled limits allow the table") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = 0;
+    limits.max_number_of_tiles = 0;
+    REQUIRE(header->set_parameters(params, &limits) == Error::Ok);
+    REQUIRE(header->get_num_tiles() == 4);
+  }
+
+  SECTION("an unrepresentable table is rejected without allocating") {
+    limits.max_number_of_tiles = 0;
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = 0;
+    params.image_width = params.image_height = UINT32_MAX;
+    params.tile_width = params.tile_height = 1;
+    REQUIRE(header->set_parameters(params, &limits).sub_error_code == heif_suberror_Security_limit_exceeded);
+    REQUIRE(header->get_num_tiles() == 0);
+  }
+}
+
+TEST_CASE("tili offset reads count temporary input alongside retained storage")
+{
+  Box_tilC config;
+  auto params = config.get_parameters();
+  params.image_width = params.image_height = 16;
+  params.tile_width = params.tile_height = 8;
+  params.offset_field_length = params.size_field_length = 32;
+  heif_security_limits limits = *heif_get_global_security_limits();
+  size_t table_bytes;
+  {
+    TotalMemoryTracker tracker(&limits);
+    TiledHeader header;
+    REQUIRE(header.set_parameters(params, &limits) == Error::Ok);
+    table_bytes = tracker.get_max_total_memory_used();
+  }
+  constexpr size_t input_bytes = 4 * 8;
+  limits.max_memory_block_size = std::max(table_bytes, input_bytes);
+  limits.max_total_memory = table_bytes + input_bytes;
+  TotalMemoryTracker tracker(&limits);
+  TiledHeader header;
+  REQUIRE(header.set_parameters(params, &limits) == Error::Ok);
+  StreamWriter writer;
+  for (uint32_t i = 0; i < 4; i++) {
+    writer.write32(64 + i * 8);
+    writer.write32(8);
+  }
+  auto payload = writer.get_data();
+  auto file = std::make_shared<HeifFile>();
+  file->set_security_limits(&limits);
+  file->new_empty_file();
+
+  SECTION("exact concurrent budgets preserve offsets and serialization") {
+    auto id = file->add_infe(fourcc("tili"), payload.data(), payload.size());
+    REQUIRE(id);
+    REQUIRE(header.read_full_offset_table(file, *id, &limits) == Error::Ok);
+    for (uint32_t i = 0; i < 4; i++) {
+      REQUIRE(header.get_tile_offset(i) == 64 + i * 8);
+      REQUIRE(header.get_tile_size(i) == 8);
+    }
+    auto encoded = header.write_offset_table();
+    REQUIRE(encoded);
+    REQUIRE(*encoded == payload);
+  }
+
+  SECTION("input and retained storage must fit concurrently") {
+    limits.max_total_memory--;
+    auto id = file->add_infe(fourcc("tili"), payload.data(), payload.size());
+    REQUIRE(id);
+    REQUIRE(header.read_full_offset_table(file, *id, &limits).sub_error_code == heif_suberror_Security_limit_exceeded);
+    REQUIRE_FALSE(header.is_tile_offset_known(0));
+  }
+
+  SECTION("temporary input obeys the current block limit") {
+    limits.max_memory_block_size = input_bytes - 1;
+    auto id = file->add_infe(fourcc("tili"), payload.data(), payload.size());
+    REQUIRE(id);
+    REQUIRE(header.read_full_offset_table(file, *id, &limits).sub_error_code == heif_suberror_Security_limit_exceeded);
+    REQUIRE_FALSE(header.is_tile_offset_known(0));
+  }
+
+  SECTION("truncated input is rejected before reading table entries") {
+    payload.pop_back();
+    auto id = file->add_infe(fourcc("tili"), payload.data(), payload.size());
+    REQUIRE(id);
+    REQUIRE(header.read_full_offset_table(file, *id, &limits) != Error::Ok);
+    REQUIRE_FALSE(header.is_tile_offset_known(0));
+  }
+
+  limits.max_memory_block_size = 0;
+  MemoryHandle probe;
+  REQUIRE(probe.alloc(limits.max_total_memory - table_bytes, &limits, "released offset input") == Error::Ok);
+  REQUIRE(probe.alloc(1, &limits, "retained offset storage") != Error::Ok);
+}
 
 TEST_CASE("box payload allocations respect block and total memory limits")
 {
