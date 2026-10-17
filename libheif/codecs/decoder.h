@@ -64,6 +64,10 @@ Result<uint32_t> count_nal_coded_pictures(const std::vector<uint8_t>& data,
                                           heif_compression_format codec);
 
 
+// Validate HEVC/VVC configuration array lengths without consuming the parent range.
+Error validate_nal_array_lengths(BitstreamRange& range, int nArrays, const char* box_type);
+
+
 // Specifies the input data for decoding.
 // For images, this points to the iloc extents.
 // For sequences, this points to the track data.

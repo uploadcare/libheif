@@ -381,8 +381,8 @@ protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;
 
 private:
-  std::vector<TimeToSample> m_entries;
   MemoryHandle m_memory_handle;
+  std::vector<TimeToSample> m_entries;
 };
 
 

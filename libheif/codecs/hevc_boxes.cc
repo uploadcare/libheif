@@ -23,6 +23,7 @@
 #include "error.h"
 #include "file.h"
 #include "hevc_dec.h"
+#include "decoder.h"
 
 #include <cassert>
 #include <cmath>
@@ -71,6 +72,13 @@ Error HEVCDecoderConfigurationRecord::parse(BitstreamRange& range, const heif_se
   m_length_size = static_cast<uint8_t>((byte & 0x03) + 1);
 
   int nArrays = range.read8();
+  if (auto err = validate_nal_array_lengths(range, nArrays, "hvcC")) {
+    return err;
+  }
+  if (auto err = memory_handle.alloc(nArrays, sizeof(NalArray), limits, "hvcC NAL arrays")) {
+    return err;
+  }
+  m_nal_array.reserve(nArrays);
 
   for (int i = 0; i < nArrays && !range.error(); i++) {
     byte = range.read8();
@@ -81,6 +89,10 @@ Error HEVCDecoderConfigurationRecord::parse(BitstreamRange& range, const heif_se
     array.m_NAL_unit_type = (byte & 0x3F);
 
     int nUnits = range.read16();
+    if (auto err = memory_handle.alloc(nUnits, sizeof(std::vector<uint8_t>), limits, "hvcC NAL descriptors")) {
+      return err;
+    }
+    array.m_nal_units.reserve(nUnits);
     for (int u = 0; u < nUnits && !range.error(); u++) {
 
       std::vector<uint8_t> nal_unit;

@@ -325,11 +325,17 @@ public:
 
   // --- GIMI content ID
 
-  virtual void set_gimi_sample_content_id(std::string id) { m_gimi_sample_content_id = std::move(id); }
+  virtual void set_gimi_sample_content_id(std::string id) { m_gimi_sample_content_id = std::make_shared<const MemoryTrackedString>(std::move(id)); }
 
-  [[nodiscard]] bool has_gimi_sample_content_id() const { return !m_gimi_sample_content_id.empty(); }
+  void set_gimi_sample_content_id(std::shared_ptr<const MemoryTrackedString> id) { m_gimi_sample_content_id = std::move(id); }
 
-  [[nodiscard]] const std::string& get_gimi_sample_content_id() const { return m_gimi_sample_content_id; }
+  [[nodiscard]] bool has_gimi_sample_content_id() const { return m_gimi_sample_content_id && !m_gimi_sample_content_id->value.empty(); }
+
+  [[nodiscard]] const std::string& get_gimi_sample_content_id() const
+  {
+    static const std::string empty;
+    return m_gimi_sample_content_id ? m_gimi_sample_content_id->value : empty;
+  }
 
 
   [[nodiscard]] bool has_component_content_ids() const
@@ -516,8 +522,8 @@ private:
   // duplicate it correctly (GHSA-qwpf-5wf7-r996). std::nullopt == "no timestamp".
   std::optional<heif_tai_timestamp_packet> m_tai_timestamp;
 
-  // Empty string means "no content id assigned".
-  std::string m_gimi_sample_content_id;
+  // Shared with the parsed property and metadata copies to retain its reservation.
+  std::shared_ptr<const MemoryTrackedString> m_gimi_sample_content_id;
 
   // Per-component description vector. Single source of truth for per-component
   // metadata (id, channel, type, format, datatype, bit depth, dims, content ID).

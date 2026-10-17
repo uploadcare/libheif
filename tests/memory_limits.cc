@@ -258,14 +258,6 @@ std::vector<uint8_t> make_string_box(const std::string& kind, size_t length)
   return writer.get_data();
 }
 
-size_t allocation_size(const std::string& kind, uint32_t count)
-{
-  if (kind == "auxC") {
-    return count + sizeof(kAuxType) - 1;
-  }
-  return (kind == "elst0" || kind == "elst1") ? count * sizeof(Box_elst::Entry) : count;
-}
-
 std::vector<uint8_t> make_mini(bool inherited_configs, bool hdr = true)
 {
   Box_mini mini;
@@ -301,6 +293,29 @@ Error parse_box(const std::vector<uint8_t>& data, const heif_security_limits* li
   auto reader = std::make_shared<StreamReader_memory>(data.data(), data.size(), false);
   BitstreamRange range(reader, data.size());
   return Box::read(range, &box, limits);
+}
+
+// Include retained parser bookkeeping when deriving exact total budgets.
+// The allocation-hook tests independently check these charges against real allocations.
+size_t parsed_storage_size(const std::vector<uint8_t>& data)
+{
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = limits.max_total_memory = 0;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+  return tracker.get_max_total_memory_used();
+}
+
+size_t allocation_size(const std::string& kind, uint32_t count)
+{
+  if (kind == "hvcC" || kind == "vvcC") {
+    return parsed_storage_size(make_box(kind, count));
+  }
+  if (kind == "auxC") {
+    return count + sizeof(kAuxType) - 1;
+  }
+  return (kind == "elst0" || kind == "elst1") ? count * sizeof(Box_elst::Entry) : count;
 }
 
 std::vector<uint8_t> make_mask_file(const std::vector<uint8_t>& region_data = {},
@@ -556,7 +571,7 @@ TEST_CASE("box payload allocations respect block and total memory limits")
   INFO("box: " << kind);
   const auto data = make_box(kind, 32);
   const size_t amount = allocation_size(kind, 32);
-  const size_t block_amount = kind == "auxC" ? 32 : amount;
+  const size_t block_amount = (kind == "auxC" || kind == "hvcC" || kind == "vvcC") ? 32 : amount;
   heif_security_limits limits = *heif_get_global_security_limits();
   limits.max_memory_block_size = block_amount;
   limits.max_total_memory = amount;
@@ -1014,8 +1029,9 @@ TEST_CASE("hvcC accounts for all NAL payloads within and across arrays")
   std::copy(header.begin(), header.end(), data.begin());
 
   heif_security_limits limits = *heif_get_global_security_limits();
-  limits.max_memory_block_size = 32;
-  limits.max_total_memory = 64;
+  const size_t amount = parsed_storage_size(data);
+  limits.max_memory_block_size = 64;
+  limits.max_total_memory = amount;
   TotalMemoryTracker tracker(&limits);
   std::shared_ptr<Box> box;
   REQUIRE(parse_box(data, &limits, box) == Error::Ok);
@@ -1024,7 +1040,7 @@ TEST_CASE("hvcC accounts for all NAL payloads within and across arrays")
   REQUIRE(output.get_data() == data);
   box.reset();
 
-  limits.max_total_memory = 63;
+  limits.max_total_memory = amount - 1;
   Error err = parse_box(data, &limits, box);
   REQUIRE(err.error_code == heif_error_Memory_allocation_error);
   REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
@@ -1190,18 +1206,19 @@ TEST_CASE("AVC and VVC accumulate all payloads within one box")
   }
   const auto data = writer.get_data();
   heif_security_limits limits = *heif_get_global_security_limits();
-  limits.max_memory_block_size = 32;
-  limits.max_total_memory = 96;
+  const size_t amount = parsed_storage_size(data);
+  limits.max_memory_block_size = 96;
+  limits.max_total_memory = amount;
   TotalMemoryTracker tracker(&limits);
   std::shared_ptr<Box> box;
   REQUIRE(parse_box(data, &limits, box) == Error::Ok);
   box.reset();
-  limits.max_total_memory = 95;
+  limits.max_total_memory = amount - 1;
   Error err = parse_box(data, &limits, box);
   REQUIRE(err.error_code == heif_error_Memory_allocation_error);
   REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
   box.reset();
-  limits.max_total_memory = 96;
+  limits.max_total_memory = amount;
   REQUIRE(parse_box(data, &limits, box) == Error::Ok);
 }
 
@@ -1229,7 +1246,8 @@ TEST_CASE("decoder input assembly accounts configuration and cached data togethe
   limits.max_memory_block_size = 64;
   const size_t header_size = (kind == "jpgC" || kind == "av1C") ? 16 : 20;
   const size_t combined_size = header_size + 32;
-  limits.max_total_memory = 16 + 32 + combined_size;
+  const size_t original_storage = allocation_size(kind, 16) + 32;
+  limits.max_total_memory = original_storage + combined_size;
   TotalMemoryTracker tracker(&limits);
   std::shared_ptr<Box> box;
   REQUIRE(parse_box(make_box(kind, 16), &limits, box) == Error::Ok);
@@ -1295,7 +1313,7 @@ TEST_CASE("decoder input assembly accounts configuration and cached data togethe
   }
 
   SECTION("configuration is rejected before copying when its budget is exhausted") {
-    limits.max_total_memory = 48 + header_size - 1;
+    limits.max_total_memory = original_storage + header_size - 1;
     MemoryHandle owner;
     std::vector<uint8_t> assembled;
     auto result = decoder->get_compressed_data(true, assembled, owner);
@@ -1315,7 +1333,7 @@ TEST_CASE("decoder input assembly accounts configuration and cached data togethe
   }
 
   SECTION("frames without configuration borrow the cache even with no spare budget") {
-    limits.max_total_memory = 48;
+    limits.max_total_memory = original_storage;
     MemoryHandle owner;
     std::vector<uint8_t> assembled;
     auto result = decoder->get_compressed_data(false, assembled, owner);
@@ -1571,7 +1589,40 @@ TEST_CASE("metadata and cached decoder input respect the remaining context budge
 }
 
 
-TEST_CASE("file-backed iloc reads reserve each extent before reading payload bytes")
+TEST_CASE("failed file-range reads preserve the caller's existing reservation")
+{
+  const auto bytes = make_mask_file();
+  heif_security_limits limits = *heif_get_global_security_limits();
+  auto file = std::make_shared<HeifFile>();
+  file->set_security_limits(&limits);
+  REQUIRE(file->read(std::make_shared<StreamReader_memory>(bytes.data(), bytes.size(), false)) == Error::Ok);
+  limits.max_memory_block_size = 32;
+  limits.max_total_memory = 32;
+  TotalMemoryTracker tracker(&limits);
+  MemoryHandle owner;
+  REQUIRE(owner.alloc(8, &limits, "existing caller reservation") == Error::Ok);
+  DataExtent extent;
+  extent.set_file_range(file, bytes.size(), 16);
+
+  for (int i = 0; i < 4; i++) {
+    auto result = extent.read_data(0, 16, &owner);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().sub_error_code == heif_suberror_End_of_data);
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(24, &limits, "released failed read") == Error::Ok);
+    REQUIRE(probe.alloc(1, &limits, "existing caller reservation remains") != Error::Ok);
+  }
+
+  extent.set_file_range(file, 0, 16);
+  auto result = extent.read_data(0, 16, &owner);
+  REQUIRE(result);
+  REQUIRE(*result == std::vector<uint8_t>(bytes.begin(), bytes.begin() + 16));
+  MemoryHandle probe;
+  REQUIRE(probe.alloc(8, &limits, "remaining budget after successful read") == Error::Ok);
+  REQUIRE(probe.alloc(1, &limits, "successful read remains charged") != Error::Ok);
+}
+
+TEST_CASE("file-backed iloc reads reserve the complete output before reading payload bytes")
 {
   const auto method = GENERATE(uint16_t{0}, uint16_t{1});
   StreamWriter payload_writer;
@@ -1630,17 +1681,14 @@ TEST_CASE("file-backed iloc reads reserve each extent before reading payload byt
     REQUIRE(data.empty());
   }
 
-  SECTION("a later failure leaves only the already reserved prefix") {
+  SECTION("a budget that fits only a prefix rejects before reading any extent") {
     limits.max_total_memory = 16;
     Error err = iloc->read_data(1, reader, idat, &data, &limits, &owner);
     REQUIRE(err.error_code == heif_error_Memory_allocation_error);
-    REQUIRE(reader->bytes_read == 16);
-    REQUIRE(data == std::vector<uint8_t>(16, 0xAA));
+    REQUIRE(reader->bytes_read == 0);
+    REQUIRE(data.empty());
     MemoryHandle probe;
-    REQUIRE(probe.alloc(1, &limits, "budget probe") != Error::Ok);
-    std::vector<uint8_t>().swap(data);
-    owner.free();
-    REQUIRE(probe.alloc(1, &limits, "budget probe") == Error::Ok);
+    REQUIRE(probe.alloc(16, &limits, "unchanged budget") == Error::Ok);
   }
 
   SECTION("exact budget accepts and retains both extents") {
@@ -1649,6 +1697,29 @@ TEST_CASE("file-backed iloc reads reserve each extent before reading payload byt
     REQUIRE(data == std::vector<uint8_t>(32, 0xAA));
     MemoryHandle probe;
     REQUIRE(probe.alloc(1, &limits, "budget probe") != Error::Ok);
+  }
+
+  SECTION("replacement storage must fit alongside the existing destination") {
+    const bool sufficient = GENERATE(false, true);
+    limits.max_memory_block_size = 48;
+    limits.max_total_memory = sufficient ? 64 : 63;
+    REQUIRE(owner.alloc(16, &limits, "existing destination") == Error::Ok);
+    data.assign(16, 0xBB);
+    Error err = iloc->read_data(1, reader, idat, &data, &limits, &owner);
+    if (sufficient) {
+      REQUIRE(err == Error::Ok);
+      REQUIRE(reader->bytes_read == 32);
+      std::vector<uint8_t> expected(16, 0xBB);
+      expected.insert(expected.end(), 32, 0xAA);
+      REQUIRE(data == expected);
+    }
+    else {
+      REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+      REQUIRE(reader->bytes_read == 0);
+      REQUIRE(data == std::vector<uint8_t>(16, 0xBB));
+      MemoryHandle probe;
+      REQUIRE(probe.alloc(47, &limits, "unchanged budget after rejection") == Error::Ok);
+    }
   }
 }
 
@@ -2407,4 +2478,142 @@ TEST_CASE("compressed metadata block limits apply to the complete output")
     REQUIRE(result);
     REQUIRE(*result == payload);
   }
+}
+
+#if WITH_UNCOMPRESSED_CODEC
+TEST_CASE("component strings respect independent block and total budgets")
+{
+  const std::string kind = GENERATE("cmpd", "GIMI");
+  const std::string mode = GENERATE("block", "total", "retained", "disabled");
+  constexpr size_t payload_size = 4096;
+  StreamWriter writer;
+  if (kind == "cmpd") {
+    writer.write32(0);
+    writer.write32(fourcc("cmpd"));
+    writer.write32(1);
+    writer.write16(0x8000);
+    writer.write(std::string(payload_size, 'x'));
+  }
+  else {
+    Box_gimi_component_content_ids property;
+    property.set_content_ids({std::string(payload_size, 'x')});
+    REQUIRE(static_cast<const Box&>(property).write(writer) == Error::Ok);
+  }
+  const auto size = static_cast<uint32_t>(writer.get_data().size());
+  writer.set_position(0);
+  writer.write32(size);
+  const auto bytes = writer.get_data();
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = mode == "block" ? 32 : 0;
+  limits.max_total_memory = mode == "total" ? 32 : mode == "retained" ? 65536 : 0;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  Error error = parse_box(bytes, &limits, box);
+  if (mode == "block" || mode == "total") {
+    REQUIRE(error.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(error.sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+  else {
+    REQUIRE(error == Error::Ok);
+    if (kind == "cmpd") {
+      auto property = std::dynamic_pointer_cast<Box_cmpd>(box);
+      REQUIRE(property->get_components()[0].component_type_uri == std::string(payload_size, 'x'));
+    }
+    else {
+      auto property = std::dynamic_pointer_cast<Box_gimi_component_content_ids>(box);
+      REQUIRE(property->get_content_ids() == std::vector<std::string>{std::string(payload_size, 'x')});
+    }
+    if (mode == "retained") {
+      MemoryHandle probe;
+      REQUIRE(probe.alloc(limits.max_total_memory - payload_size + 1, &limits, "retained component string") != Error::Ok);
+      box.reset();
+      REQUIRE(probe.alloc(limits.max_total_memory, &limits, "released component string") == Error::Ok);
+    }
+  }
+}
+#endif
+
+TEST_CASE("old reservations cannot credit a newly registered tracker")
+{
+  const size_t new_size = GENERATE(size_t{32}, size_t{64});
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = limits.max_total_memory = 64;
+  MemoryHandle old_owner;
+  {
+    TotalMemoryTracker first(&limits);
+    REQUIRE(old_owner.alloc(64, &limits, "surviving old allocation") == Error::Ok);
+  }
+  TotalMemoryTracker second(&limits);
+  MemoryHandle new_owner;
+  REQUIRE(new_owner.alloc(new_size, &limits, "new tracker allocation") == Error::Ok);
+  MemoryHandle moved(std::move(old_owner));
+  MemoryHandle surviving_owner;
+  surviving_owner = std::move(moved);
+  surviving_owner.free(32);
+  surviving_owner.free();
+  MemoryHandle probe;
+  CHECK(probe.alloc(65 - new_size, &limits, "new tracker overflow").sub_error_code == heif_suberror_Security_limit_exceeded);
+  probe.free();
+  new_owner.free();
+  REQUIRE(probe.alloc(64, &limits, "released new tracker allocation") == Error::Ok);
+}
+
+TEST_CASE("shared content IDs retain their reservation until the last metadata copy is released")
+{
+  constexpr size_t length = 4096;
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = limits.max_total_memory = length;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  REQUIRE(parse_box(make_string_box("gimi", length), &limits, box) == Error::Ok);
+  auto property = std::dynamic_pointer_cast<Box_gimi_content_id>(box);
+  REQUIRE(property);
+  ImageDescription original;
+  original.set_gimi_sample_content_id(property->get_shared_content_id());
+  ImageDescription copy;
+  copy.copy_metadata_from(original);
+  property.reset();
+  box.reset();
+  original.set_gimi_sample_content_id("replacement");
+  REQUIRE(copy.get_gimi_sample_content_id() == std::string(length, 'x'));
+  REQUIRE(original.get_gimi_sample_content_id() == "replacement");
+  MemoryHandle probe;
+  REQUIRE(probe.alloc(1, &limits, "retained shared content ID") != Error::Ok);
+  copy.set_gimi_sample_content_id(std::string{});
+  REQUIRE(probe.alloc(length, &limits, "released shared content ID") == Error::Ok);
+}
+
+TEST_CASE("replacing parsed property strings preserves snapshots and releases the box")
+{
+  const std::string kind = GENERATE("gimi", "auxC");
+  constexpr size_t length = 4096;
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = limits.max_total_memory = length;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  REQUIRE(parse_box(make_string_box(kind, length), &limits, box) == Error::Ok);
+  std::weak_ptr<Box> original_box = box;
+  std::shared_ptr<const MemoryTrackedString> snapshot;
+  if (kind == "gimi") {
+    auto property = std::dynamic_pointer_cast<Box_gimi_content_id>(box);
+    REQUIRE(property);
+    snapshot = property->get_shared_content_id();
+    property->set_content_id("replacement");
+    REQUIRE(property->get_content_id() == "replacement");
+  }
+  else {
+    auto property = std::dynamic_pointer_cast<Box_auxC>(box);
+    REQUIRE(property);
+    snapshot = property->get_shared_aux_type();
+    property->set_aux_type("replacement");
+    REQUIRE(property->get_aux_type() == "replacement");
+  }
+  box.reset();
+  REQUIRE(original_box.expired());
+  REQUIRE(snapshot);
+  REQUIRE(snapshot->value == std::string(length, 'x'));
+  MemoryHandle probe;
+  REQUIRE(probe.alloc(1, &limits, "retained property snapshot") != Error::Ok);
+  snapshot.reset();
+  REQUIRE(probe.alloc(length, &limits, "released property snapshot") == Error::Ok);
 }

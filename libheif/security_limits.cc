@@ -224,20 +224,24 @@ std::mutex& get_memory_usage_mutex()
   return sMutex;
 }
 
-static std::map<const heif_security_limits*, memory_stats> sMemoryUsage;
+static std::map<const heif_security_limits*, std::shared_ptr<memory_stats>> sMemoryUsage;
 
 TotalMemoryTracker::TotalMemoryTracker(const heif_security_limits* limits)
 {
   std::lock_guard<std::mutex> lock(get_memory_usage_mutex());
 
-  sMemoryUsage[limits] = {};
+  m_stats = std::make_shared<memory_stats>();
+  sMemoryUsage[limits] = m_stats;
   m_limits_context = limits;
 }
 
 TotalMemoryTracker::~TotalMemoryTracker()
 {
   std::lock_guard<std::mutex> lock(get_memory_usage_mutex());
-  sMemoryUsage.erase(m_limits_context);
+  auto it = sMemoryUsage.find(m_limits_context);
+  if (it != sMemoryUsage.end() && it->second == m_stats) {
+    sMemoryUsage.erase(it);
+  }
 }
 
 
@@ -245,14 +249,7 @@ size_t TotalMemoryTracker::get_max_total_memory_used() const
 {
   std::lock_guard<std::mutex> lock(get_memory_usage_mutex());
 
-  auto it = sMemoryUsage.find(m_limits_context);
-  if (it != sMemoryUsage.end()) {
-    return it->second.max_memory_usage;
-  }
-  else {
-    assert(false);
-    return 0;
-  }
+  return m_stats->max_memory_usage;
 }
 
 
@@ -332,19 +329,26 @@ Error MemoryHandle::alloc(size_t memory_amount, const heif_security_limits* limi
     return Error::Ok;
   }
 
+  // A surviving handle must not merge reservations from two tracker lifetimes.
+  if (m_stats && m_stats != it->second) {
+    return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+            "Memory handle belongs to a retired limits context"};
+  }
+
   // check against maximum total memory usage
 
   if (limits_context->max_total_memory != 0 &&
-      it->second.total_memory_usage + memory_amount > limits_context->max_total_memory) {
+      (it->second->total_memory_usage > limits_context->max_total_memory ||
+       memory_amount > limits_context->max_total_memory - it->second->total_memory_usage)) {
     std::stringstream sstr;
 
     if (reason_description) {
-      sstr << "Memory usage of " << it->second.total_memory_usage + memory_amount
+      sstr << "Memory usage of " << it->second->total_memory_usage + memory_amount
            << " bytes for " << reason_description << " exceeds the security limit of "
            << limits_context->max_total_memory << " bytes of total memory usage";
     }
     else {
-      sstr << "Memory usage of " << it->second.total_memory_usage + memory_amount
+      sstr << "Memory usage of " << it->second->total_memory_usage + memory_amount
            << " bytes exceeds the security limit of "
            << limits_context->max_total_memory << " bytes of total memory usage";
     }
@@ -358,13 +362,14 @@ Error MemoryHandle::alloc(size_t memory_amount, const heif_security_limits* limi
   // --- register memory usage
 
   m_limits_context = root_limits;
+  m_stats = it->second;
   m_memory_amount += memory_amount;
 
-  it->second.total_memory_usage += memory_amount;
+  it->second->total_memory_usage += memory_amount;
 
   // remember maximum memory usage (for informational purpose)
-  if (it->second.total_memory_usage > it->second.max_memory_usage) {
-    it->second.max_memory_usage = it->second.total_memory_usage;
+  if (it->second->total_memory_usage > it->second->max_memory_usage) {
+    it->second->max_memory_usage = it->second->total_memory_usage;
   }
 
   return Error::Ok;
@@ -373,20 +378,21 @@ Error MemoryHandle::alloc(size_t memory_amount, const heif_security_limits* limi
 
 Error MemoryHandle::merge(MemoryHandle&& other)
 {
-  if (!other.m_limits_context) {
+  if (!other.m_stats) {
     return Error::Ok;
   }
-  if (!m_limits_context) {
+  if (!m_stats) {
     *this = std::move(other);
     return Error::Ok;
   }
-  if (m_limits_context != other.m_limits_context) {
+  if (m_stats != other.m_stats) {
     return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
             "Cannot merge memory reservations from different limits contexts"};
   }
   m_memory_amount += other.m_memory_amount;
   other.m_limits_context = nullptr;
   other.m_memory_amount = 0;
+  other.m_stats.reset();
   return Error::Ok;
 }
 
@@ -396,11 +402,8 @@ void MemoryHandle::free()
   if (m_limits_context) {
     std::lock_guard<std::mutex> lock(get_memory_usage_mutex());
 
-    auto it = sMemoryUsage.find(m_limits_context);
-    if (it != sMemoryUsage.end()) {
-      it->second.total_memory_usage -= m_memory_amount;
-    }
-
+    m_stats->total_memory_usage -= m_memory_amount;
+    m_stats.reset();
     m_limits_context = nullptr;
     m_memory_amount = 0;
   }
@@ -412,11 +415,7 @@ void MemoryHandle::free(size_t memory_amount)
   if (m_limits_context) {
     std::lock_guard<std::mutex> lock(get_memory_usage_mutex());
 
-    auto it = sMemoryUsage.find(m_limits_context);
-    if (it != sMemoryUsage.end()) {
-      it->second.total_memory_usage -= memory_amount;
-    }
-
+    m_stats->total_memory_usage -= memory_amount;
     m_memory_amount -= memory_amount;
   }
 }

@@ -1626,7 +1626,7 @@ Result<std::shared_ptr<HeifPixelImage>> ImageItem::decode_image(const heif_decod
 
     auto gimi_content_id = get_property<Box_gimi_content_id>();
     if (gimi_content_id) {
-      img->set_gimi_sample_content_id(gimi_content_id->get_content_id());
+      img->set_gimi_sample_content_id(gimi_content_id->get_shared_content_id());
     }
 
     // Image projection (OMAF)

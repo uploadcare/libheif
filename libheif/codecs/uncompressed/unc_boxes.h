@@ -78,6 +78,7 @@ public:
 protected:
   Error parse(BitstreamRange& range, const heif_security_limits* limits) override;
 
+  MemoryHandle m_memory_handle;
   std::vector<Component> m_components;
 };
 
@@ -334,8 +335,8 @@ public:
 protected:
   Error parse(BitstreamRange& range, const heif_security_limits* limits) override;
 
-  std::vector<CompressedUnitInfo> m_unit_infos;
   MemoryHandle m_memory_handle;
+  std::vector<CompressedUnitInfo> m_unit_infos;
 
 private:
   const uint8_t get_required_offset_code(uint64_t offset) const;
@@ -537,6 +538,7 @@ protected:
   Error write(StreamWriter& writer) const override;
 
 private:
+  MemoryHandle m_memory_handle;
   std::vector<std::string> m_content_ids;
 };
 

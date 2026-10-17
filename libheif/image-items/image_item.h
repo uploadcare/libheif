@@ -304,17 +304,21 @@ public:
 
   // --- generic aux image
 
-  void set_is_aux_image(const std::string& aux_type)
+  void set_is_aux_image(std::shared_ptr<const MemoryTrackedString> aux_type)
   {
     m_is_aux_image = true;
-    m_aux_image_type = aux_type;
+    m_aux_image_type = std::move(aux_type);
   }
 
   void add_aux_image(std::shared_ptr<ImageItem> img) { m_aux_images.push_back(std::move(img)); }
 
   bool is_aux_image() const { return m_is_aux_image; }
 
-  const std::string& get_aux_type() const { return m_aux_image_type; }
+  const std::string& get_aux_type() const
+  {
+    static const std::string empty;
+    return m_aux_image_type ? m_aux_image_type->value : empty;
+  }
 
   std::vector<std::shared_ptr<ImageItem>> get_aux_images(int aux_image_filter = 0) const
   {
@@ -541,7 +545,7 @@ private:
   heif_depth_representation_info m_depth_representation_info;
 
   bool m_is_aux_image = false;
-  std::string m_aux_image_type;
+  std::shared_ptr<const MemoryTrackedString> m_aux_image_type;
   std::vector<std::shared_ptr<ImageItem>> m_aux_images;
 
   std::vector<std::shared_ptr<ImageMetadata>> m_metadata;

@@ -170,12 +170,14 @@ Error Box_cmpd::parse(BitstreamRange& range, const heif_security_limits* limits)
     Component component;
     component.component_type = range.read16();
     if (component.component_type >= 0x8000) {
-      component.component_type_uri = range.read_string();
+      if (auto err = range.read_string(component.component_type_uri, m_memory_handle, limits)) {
+        return err;
+      }
     }
     else {
       component.component_type_uri = std::string();
     }
-    m_components.push_back(component);
+    m_components.push_back(std::move(component));
   }
 
   return range.get_error();
@@ -1560,7 +1562,11 @@ Error Box_gimi_component_content_ids::parse(BitstreamRange& range, const heif_se
               heif_suberror_End_of_data,
               "Not enough data for all component content IDs"};
     }
-    m_content_ids.push_back(range.read_string());
+    std::string id;
+    if (auto err = range.read_string(id, m_memory_handle, limits)) {
+      return err;
+    }
+    m_content_ids.push_back(std::move(id));
   }
 
   return range.get_error();
