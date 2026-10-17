@@ -61,6 +61,7 @@
 namespace {
 
 struct IpmaTable : Box_ipma { using Box_ipma::Entry; };
+constexpr char kAuxType[] = "urn:example:aux";
 
 std::vector<uint8_t> make_box(const std::string& kind, uint32_t count)
 {
@@ -193,7 +194,7 @@ std::vector<uint8_t> make_box(const std::string& kind, uint32_t count)
     }
     else if (kind == "auxC") {
       writer.write32(0);
-      writer.write(std::string("urn:example:aux"));
+      writer.write(std::string(kAuxType));
     }
     else if (is_icc) {
       writer.write32(fourcc(kind.c_str()));
@@ -209,8 +210,57 @@ std::vector<uint8_t> make_box(const std::string& kind, uint32_t count)
   return writer.get_data();
 }
 
+std::vector<uint8_t> make_string_box(const std::string& kind, size_t length)
+{
+  const std::string value(length, 'x');
+  const bool infe = kind.substr(0, 4) == "infe";
+  StreamWriter writer;
+  writer.write32(0);
+  writer.write32(fourcc(kind == "gimi" ? "uuid" : kind.substr(0, 4).c_str()));
+  if (kind == "gimi") {
+    const uint8_t uuid[] = {0x26, 0x1e, 0xf3, 0x74, 0x1d, 0x97, 0x5b, 0xba,
+                            0xac, 0xbd, 0x9d, 0x2c, 0x8e, 0xa7, 0x35, 0x22};
+    for (uint8_t byte : uuid) writer.write8(byte);
+    writer.write(value, false);
+  }
+  else {
+    writer.write32(infe ? (kind == "infe3-name" ? 0x03000000 : 0x02000000) : 0);
+    if (infe) {
+      if (kind == "infe3-name") writer.write32(0x10000);
+      else writer.write16(1);
+      writer.write16(0);
+      const bool mime = kind == "infe-type" || kind == "infe-encoding" || kind == "infe-all";
+      writer.write32(fourcc(mime ? "mime" : kind == "infe-uri" ? "uri " : "hvc1"));
+      writer.write(kind == "infe-name" || kind == "infe3-name" || kind == "infe-all" ? value : std::string{});
+      if (mime) {
+        writer.write(kind == "infe-type" || kind == "infe-all" ? value : std::string{});
+        writer.write(kind == "infe-encoding" || kind == "infe-all" ? value : std::string{});
+      }
+      else if (kind == "infe-uri") {
+        writer.write(value);
+      }
+    }
+    else {
+      if (kind == "hdlr") {
+        writer.write32(0);
+        writer.write32(fourcc("pict"));
+        for (int i = 0; i < 3; i++) writer.write32(0);
+      }
+      const int fields = kind == "udes" ? 4 : 1;
+      for (int i = 0; i < fields; i++) writer.write(value);
+    }
+  }
+  const auto size = static_cast<uint32_t>(writer.get_data().size());
+  writer.set_position(0);
+  writer.write32(size);
+  return writer.get_data();
+}
+
 size_t allocation_size(const std::string& kind, uint32_t count)
 {
+  if (kind == "auxC") {
+    return count + sizeof(kAuxType) - 1;
+  }
   return (kind == "elst0" || kind == "elst1") ? count * sizeof(Box_elst::Entry) : count;
 }
 
@@ -288,8 +338,9 @@ TEST_CASE("box payload allocations respect block and total memory limits")
   INFO("box: " << kind);
   const auto data = make_box(kind, 32);
   const size_t amount = allocation_size(kind, 32);
+  const size_t block_amount = kind == "auxC" ? 32 : amount;
   heif_security_limits limits = *heif_get_global_security_limits();
-  limits.max_memory_block_size = amount;
+  limits.max_memory_block_size = block_amount;
   limits.max_total_memory = amount;
   TotalMemoryTracker tracker(&limits);
   std::shared_ptr<Box> box;
@@ -311,7 +362,7 @@ TEST_CASE("box payload allocations respect block and total memory limits")
   }
 
   SECTION("block limit rejects the allocation independently of the total limit") {
-    limits.max_memory_block_size = amount - 1;
+    limits.max_memory_block_size = block_amount - 1;
     limits.max_total_memory = 0;
     Error err = parse_box(data, &limits, box);
     if (kind == "jpgC") {
@@ -381,13 +432,86 @@ TEST_CASE("empty box payloads fit a minimal memory budget")
                                     "avcS", "avcP", "avcE", "vvcC", "auxC");
   INFO("box: " << kind);
   heif_security_limits limits = *heif_get_global_security_limits();
-  limits.max_memory_block_size = 1;
-  limits.max_total_memory = 1;
+  limits.max_memory_block_size = std::max(size_t{1}, allocation_size(kind, 0));
+  limits.max_total_memory = limits.max_memory_block_size;
   TotalMemoryTracker tracker(&limits);
   std::shared_ptr<Box> box;
   REQUIRE(parse_box(make_box(kind, 0), &limits, box) == Error::Ok);
 }
 
+
+TEST_CASE("parsed box strings enforce block and retained total budgets")
+{
+  const std::string kind = GENERATE("auxC", "infe-name", "infe3-name", "infe-type", "infe-encoding",
+                                    "infe-uri", "infe-all", "udes", "elng", "uri ", "auxi", "hdlr", "url ", "gimi");
+  INFO("box: " << kind);
+  const size_t length = GENERATE(size_t{32}, size_t{8193});
+  const size_t total_bytes = length * (kind == "udes" ? 4 : kind == "infe-all" ? 3 : 1);
+  const auto data = make_string_box(kind, length);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = length;
+  limits.max_total_memory = total_bytes;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+
+  SECTION("exact budgets accept and preserve every string") {
+    REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+    StreamWriter writer;
+    REQUIRE(box->write(writer) == Error::Ok);
+    REQUIRE(writer.get_data() == data);
+  }
+
+  SECTION("each string must fit the block limit independently of the total") {
+    limits.max_memory_block_size = length - 1;
+    limits.max_total_memory = 0;
+    Error err = parse_box(data, &limits, box);
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+
+  SECTION("all strings in the box must fit the total budget") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = total_bytes - 1;
+    Error err = parse_box(data, &limits, box);
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(total_bytes - 1, &limits, "released failed string parse") == Error::Ok);
+  }
+
+  SECTION("strings stay charged across retained boxes and are released on destruction") {
+    limits.max_total_memory = 2 * total_bytes;
+    std::shared_ptr<Box> second, third;
+    REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+    REQUIRE(parse_box(data, &limits, second) == Error::Ok);
+    Error err = parse_box(data, &limits, third);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    box.reset();
+    REQUIRE(parse_box(data, &limits, third) == Error::Ok);
+  }
+
+  SECTION("empty strings fit a minimal budget") {
+    limits.max_memory_block_size = 1;
+    limits.max_total_memory = 1;
+    REQUIRE(parse_box(make_string_box(kind, 0), &limits, box) == Error::Ok);
+  }
+
+  SECTION("disabled block limits still allow strings within the total budget") {
+    limits.max_memory_block_size = 0;
+    REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+  }
+
+  SECTION("disabled total limits still allow strings within the block budget") {
+    limits.max_total_memory = 0;
+    REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+  }
+
+  SECTION("disabled memory limits allow strings") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = 0;
+    REQUIRE(parse_box(data, &limits, box) == Error::Ok);
+  }
+}
 
 TEST_CASE("parsed box tables enforce allocation and retained total budgets")
 {

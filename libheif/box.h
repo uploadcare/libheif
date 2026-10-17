@@ -519,6 +519,7 @@ private:
   uint32_t m_pre_defined = 0;
   uint32_t m_handler_type = fourcc("pict");
   uint32_t m_reserved[3] = {0,};
+  MemoryHandle m_memory_handle;
   std::string m_name;
 };
 
@@ -708,6 +709,7 @@ private:
   uint16_t m_item_protection_index = 0;
 
   uint32_t m_item_type_4cc = 0;
+  MemoryHandle m_memory_handle;
   std::string m_item_name;
   std::string m_content_type;
   std::string m_content_encoding;
@@ -913,8 +915,8 @@ protected:
   Error write(StreamWriter& writer) const override;
 
 private:
-  std::string m_aux_type;
   MemoryHandle m_memory_handle;
+  std::string m_aux_type;
   std::vector<uint8_t> m_aux_subtypes;
 };
 
@@ -1375,6 +1377,7 @@ public:
 protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;
 
+  MemoryHandle m_memory_handle;
   std::string m_location;
 };
 
@@ -1852,6 +1855,7 @@ protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;
 
 private:
+  MemoryHandle m_memory_handle;
   std::string m_lang;
   std::string m_name;
   std::string m_description;
@@ -2036,6 +2040,7 @@ protected:
   Error write(StreamWriter& writer) const override;
 
 private:
+  MemoryHandle m_memory_handle;
   std::string m_content_id;
 };
 
@@ -2087,6 +2092,7 @@ protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;
 
 private:
+  MemoryHandle m_memory_handle;
   std::string m_lang;
 };
 

@@ -35,6 +35,8 @@
 #include "error.h"
 #include <algorithm>
 
+class MemoryHandle;
+struct heif_security_limits;
 
 class StreamReader
 {
@@ -321,11 +323,16 @@ public:
 
   std::string read_string();
 
+  // Read into an empty string, retaining its payload reservation with the owner.
+  Error read_string(std::string& output, MemoryHandle& memory_handle, const heif_security_limits* limits);
+
   // A string stored with a fixed number of bytes. The first byte contains the string length and the extra bytes
   // are filled with a padding 0.
   std::string read_fixed_string(int len);
 
   std::string read_string_until_eof();
+
+  Error read_string_until_eof(std::string& output, MemoryHandle& memory_handle, const heif_security_limits* limits);
 
   bool read(uint8_t* data, size_t n);
 

@@ -19,6 +19,7 @@
  */
 
 #include "bitstream.h"
+#include "security_limits.h"
 
 #include <utility>
 #include <cstring>
@@ -431,6 +432,48 @@ std::string BitstreamRange::read_string()
 }
 
 
+Error BitstreamRange::read_string(std::string& output, MemoryHandle& memory_handle,
+                                 const heif_security_limits* limits)
+{
+  char buffer[4096];
+  size_t buffered = 0;
+  auto istr = get_istream();
+  while (!eof()) {
+    if (!prepare_read(1)) {
+      return get_error();
+    }
+    char c;
+    if (!istr->read(&c, 1)) {
+      set_eof_while_reading();
+      return get_error();
+    }
+    // Preserve read_string()'s handling of a non-terminated final byte.
+    const bool finished = c == 0 || eof();
+    if (!finished) {
+      buffer[buffered++] = c;
+    }
+    if (buffered == sizeof(buffer) || finished) {
+      if (buffered > output.max_size() - output.size() ||
+          (limits && limits->max_memory_block_size &&
+           (output.size() > limits->max_memory_block_size ||
+            buffered > limits->max_memory_block_size - output.size()))) {
+        return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+                "Box string exceeds maximum memory block size"};
+      }
+      if (Error err = memory_handle.alloc(buffered, limits, "box string")) {
+        return err;
+      }
+      output.append(buffer, buffered);
+      buffered = 0;
+    }
+    if (finished) {
+      break;
+    }
+  }
+  return get_error();
+}
+
+
 std::string BitstreamRange::read_fixed_string(int len)
 {
   std::string str;
@@ -477,6 +520,25 @@ std::string BitstreamRange::read_string_until_eof()
   get_istream()->read(str.data(), n);
 
   return str;
+}
+
+
+Error BitstreamRange::read_string_until_eof(std::string& output, MemoryHandle& memory_handle,
+                                           const heif_security_limits* limits)
+{
+  const size_t size = get_remaining_bytes();
+  if (size > output.max_size()) {
+    return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+            "Box string exceeds maximum string size"};
+  }
+  if (Error err = memory_handle.alloc(size, limits, "box string")) {
+    return err;
+  }
+  output.resize(size);
+  if (size != 0) {
+    read(reinterpret_cast<uint8_t*>(output.data()), size);
+  }
+  return get_error();
 }
 
 

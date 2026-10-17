@@ -624,6 +624,7 @@ protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;
 
 private:
+  MemoryHandle m_memory_handle;
   std::string m_aux_track_type;
 };
 
@@ -725,6 +726,7 @@ protected:
   Error parse(BitstreamRange& range, const heif_security_limits* limits) override;
 
 private:
+  MemoryHandle m_memory_handle;
   std::string m_uri;
 };
 
