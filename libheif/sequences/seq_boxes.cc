@@ -1453,7 +1453,9 @@ Error Box_uri::parse(BitstreamRange& range, const heif_security_limits* limits)
     return unsupported_version_error("uri ");
   }
 
-  m_uri = range.read_string();
+  if (Error err = range.read_string(m_uri, m_memory_handle, limits)) {
+    return err;
+  }
 
   return range.get_error();
 }
@@ -1548,7 +1550,9 @@ Error Box_auxi::parse(BitstreamRange& range, const heif_security_limits* limits)
     return unsupported_version_error("auxi");
   }
 
-  m_aux_track_type = range.read_string();
+  if (Error err = range.read_string(m_aux_track_type, m_memory_handle, limits)) {
+    return err;
+  }
 
   return range.get_error();
 }

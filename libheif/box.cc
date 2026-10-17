@@ -1522,7 +1522,9 @@ Error Box_hdlr::parse(BitstreamRange& range, const heif_security_limits* limits)
     m_reserved[i] = range.read32();
   }
 
-  m_name = range.read_string();
+  if (Error err = range.read_string(m_name, m_memory_handle, limits)) {
+    return err;
+  }
 
   return range.get_error();
 }
@@ -2535,9 +2537,15 @@ Error Box_infe::parse(BitstreamRange& range, const heif_security_limits* limits)
     m_item_ID = range.read16();
     m_item_protection_index = range.read16();
 
-    m_item_name = range.read_string();
-    m_content_type = range.read_string();
-    m_content_encoding = range.read_string();
+    if (Error err = range.read_string(m_item_name, m_memory_handle, limits)) {
+      return err;
+    }
+    if (Error err = range.read_string(m_content_type, m_memory_handle, limits)) {
+      return err;
+    }
+    if (Error err = range.read_string(m_content_encoding, m_memory_handle, limits)) {
+      return err;
+    }
   }
 
   m_item_type_4cc = 0;
@@ -2555,13 +2563,21 @@ Error Box_infe::parse(BitstreamRange& range, const heif_security_limits* limits)
     m_item_protection_index = range.read16();
     m_item_type_4cc = range.read32();
 
-    m_item_name = range.read_string();
+    if (Error err = range.read_string(m_item_name, m_memory_handle, limits)) {
+      return err;
+    }
     if (m_item_type_4cc == fourcc("mime")) {
-      m_content_type = range.read_string();
-      m_content_encoding = range.read_string();
+      if (Error err = range.read_string(m_content_type, m_memory_handle, limits)) {
+        return err;
+      }
+      if (Error err = range.read_string(m_content_encoding, m_memory_handle, limits)) {
+        return err;
+      }
     }
     else if (m_item_type_4cc == fourcc("uri ")) {
-      m_item_uri_type = range.read_string();
+      if (Error err = range.read_string(m_item_uri_type, m_memory_handle, limits)) {
+        return err;
+      }
     }
   }
 
@@ -3676,10 +3692,8 @@ Error Box_auxC::parse(BitstreamRange& range, const heif_security_limits* limits)
     return unsupported_version_error("auxC");
   }
 
-  m_aux_type = range.read_string();
-
-  if (range.error()) {
-    return range.get_error();
+  if (Error err = range.read_string(m_aux_type, m_memory_handle, limits)) {
+    return err;
   }
 
   const size_t size = range.get_remaining_bytes();
@@ -4883,7 +4897,9 @@ Error Box_url::parse(BitstreamRange& range, const heif_security_limits* limits)
     m_location.clear();
   }
   else {
-    m_location = range.read_string();
+    if (Error err = range.read_string(m_location, m_memory_handle, limits)) {
+      return err;
+    }
   }
 
   return range.get_error();
@@ -4926,10 +4942,18 @@ Error Box_udes::parse(BitstreamRange& range, const heif_security_limits* limits)
     return unsupported_version_error("udes");
   }
 
-  m_lang = range.read_string();
-  m_name = range.read_string();
-  m_description = range.read_string();
-  m_tags = range.read_string();
+  if (Error err = range.read_string(m_lang, m_memory_handle, limits)) {
+    return err;
+  }
+  if (Error err = range.read_string(m_name, m_memory_handle, limits)) {
+    return err;
+  }
+  if (Error err = range.read_string(m_description, m_memory_handle, limits)) {
+    return err;
+  }
+  if (Error err = range.read_string(m_tags, m_memory_handle, limits)) {
+    return err;
+  }
   return range.get_error();
 }
 
@@ -5627,7 +5651,9 @@ Error Box_elng::parse(BitstreamRange& range, const heif_security_limits* limits)
     return unsupported_version_error("elng");
   }
 
-  m_lang = range.read_string();
+  if (Error err = range.read_string(m_lang, m_memory_handle, limits)) {
+    return err;
+  }
   return range.get_error();
 }
 
@@ -5649,7 +5675,9 @@ Error Box_elng::write(StreamWriter& writer) const
 
 Error Box_gimi_content_id::parse(BitstreamRange& range, const heif_security_limits* limits)
 {
-  m_content_id = range.read_string_until_eof();
+  if (Error err = range.read_string_until_eof(m_content_id, m_memory_handle, limits)) {
+    return err;
+  }
 
   return range.get_error();
 }
