@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 #include "error.h"
+#include "security_limits.h"
 #include "libheif/heif_text.h"
 
 class TextItem
@@ -35,7 +36,7 @@ public:
 
   TextItem(heif_item_id itemId, const char *text) : m_item_id(itemId), m_text(text) {}
 
-  Error parse(const std::vector<uint8_t> &data);
+  Error parse(const std::vector<uint8_t> &data, const heif_security_limits* limits);
 
   Result<std::vector<uint8_t>> encode() const;
 
@@ -51,6 +52,7 @@ public:
 
 private:
   heif_item_id m_item_id = 0;
+  MemoryHandle m_memory_handle;
   std::string m_text;
 };
 

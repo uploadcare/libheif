@@ -301,7 +301,8 @@ Error parse_box(const std::vector<uint8_t>& data, const heif_security_limits* li
   return Box::read(range, &box, limits);
 }
 
-std::vector<uint8_t> make_mask_file(const std::vector<uint8_t>& region_data = {})
+std::vector<uint8_t> make_mask_file(const std::vector<uint8_t>& region_data = {},
+                                    const std::vector<std::vector<uint8_t>>& text_payloads = {})
 {
   HeifFile file;
   file.set_security_limits(heif_get_global_security_limits());
@@ -321,6 +322,12 @@ std::vector<uint8_t> make_mask_file(const std::vector<uint8_t>& region_data = {}
     auto region_id = file.add_infe(fourcc("rgan"), region_data.data(), region_data.size());
     REQUIRE(region_id);
     file.add_iref_reference(*region_id, fourcc("cdsc"), {*mask_id});
+  }
+  for (const auto& payload : text_payloads) {
+    auto text_id = file.add_infe_mime("text/plain", heif_metadata_compression_off,
+                                      payload.data(), payload.size());
+    REQUIRE(text_id);
+    file.add_iref_reference(*text_id, fourcc("text"), {*mask_id});
   }
   StreamWriter writer;
   file.derive_box_versions();
@@ -1217,6 +1224,112 @@ TEST_CASE("region opening counts input and parsed points concurrently")
     context.get_security_limits()->max_memory_block_size = 0;
     MemoryHandle probe;
     REQUIRE(probe.alloc(limits.max_total_memory - table_bytes, context.get_security_limits(), "released failed region input") == Error::Ok);
+  }
+}
+
+TEST_CASE("text items enforce block and retained total budgets")
+{
+  std::vector<uint8_t> payload(32, 'T');
+  payload[4] = 0;
+  payload[5] = 0xFF;
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = payload.size();
+  limits.max_total_memory = payload.size();
+  TotalMemoryTracker tracker(&limits);
+  auto item = std::make_shared<TextItem>();
+
+  SECTION("exact budgets preserve the complete text payload") {
+    REQUIRE(item->parse(payload, &limits) == Error::Ok);
+    REQUIRE(item->get_item_text() == std::string(payload.begin(), payload.end()));
+    auto result = item->encode();
+    REQUIRE(result);
+    REQUIRE(*result == payload);
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(1, &limits, "retained text") != Error::Ok);
+  }
+
+  SECTION("block limits apply independently of total limits") {
+    limits.max_memory_block_size = payload.size() - 1;
+    limits.max_total_memory = 0;
+    Error err = item->parse(payload, &limits);
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    REQUIRE(item->get_item_text().empty());
+  }
+
+  SECTION("total limits apply independently of block limits") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = payload.size() - 1;
+    Error err = item->parse(payload, &limits);
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(limits.max_total_memory, &limits, "failed text parse") == Error::Ok);
+  }
+
+  SECTION("retained items share a budget and release it on destruction") {
+    limits.max_total_memory = 2 * payload.size();
+    auto second = std::make_shared<TextItem>();
+    auto third = std::make_shared<TextItem>();
+    REQUIRE(item->parse(payload, &limits) == Error::Ok);
+    REQUIRE(second->parse(payload, &limits) == Error::Ok);
+    REQUIRE(third->parse(payload, &limits).sub_error_code == heif_suberror_Security_limit_exceeded);
+    item.reset();
+    REQUIRE(third->parse(payload, &limits) == Error::Ok);
+    REQUIRE(second->get_item_text() == third->get_item_text());
+  }
+
+  SECTION("empty text needs no payload reservation") {
+    limits.max_memory_block_size = 1;
+    limits.max_total_memory = 1;
+    REQUIRE(item->parse({}, &limits) == Error::Ok);
+    REQUIRE(item->get_item_text().empty());
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(1, &limits, "empty text") == Error::Ok);
+  }
+
+  SECTION("disabled limits allow text payloads") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = 0;
+    REQUIRE(item->parse(payload, &limits) == Error::Ok);
+    REQUIRE(item->get_item_text() == std::string(payload.begin(), payload.end()));
+  }
+}
+
+TEST_CASE("text opening counts temporary input and all retained strings")
+{
+  const std::vector<uint8_t> payload(512, 'T');
+  const auto bytes = make_mask_file({}, {payload, payload});
+  heif_security_limits limits = *heif_get_global_security_limits();
+  size_t box_bytes;
+  {
+    TotalMemoryTracker tracker(&limits);
+    HeifFile file;
+    file.set_security_limits(&limits);
+    REQUIRE(file.read_from_memory(bytes.data(), bytes.size(), false) == Error::Ok);
+    box_bytes = tracker.get_max_total_memory_used();
+  }
+  const bool sufficient = GENERATE(false, true);
+  limits.max_memory_block_size = payload.size();
+  limits.max_total_memory = box_bytes + 3 * payload.size() - (sufficient ? 0 : 1);
+  HeifContext context;
+  context.set_security_limits(&limits);
+  Error err = context.read_from_memory(bytes.data(), bytes.size(), false);
+  if (sufficient) {
+    REQUIRE(err == Error::Ok);
+    const auto& ids = context.get_primary_image(false)->get_text_item_ids();
+    REQUIRE(ids.size() == 2);
+    for (auto id : ids) {
+      auto item = context.get_text_item(id);
+      REQUIRE(item);
+      REQUIRE(item->get_item_text() == std::string(payload.begin(), payload.end()));
+    }
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(payload.size(), context.get_security_limits(), "released text input") == Error::Ok);
+    REQUIRE(probe.alloc(1, context.get_security_limits(), "retained text strings") != Error::Ok);
+  }
+  else {
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
   }
 }
 

@@ -20,6 +20,7 @@
  */
 
 #include <string>
+#include <utility>
 #include "text.h"
 #include "error.h"
 #include <iostream>
@@ -32,8 +33,13 @@ Result<std::vector<uint8_t>> TextItem::encode() const
   return data;
 }
 
-Error TextItem::parse(const std::vector<uint8_t> &data)
+Error TextItem::parse(const std::vector<uint8_t> &data, const heif_security_limits* limits)
 {
+  MemoryHandle memory_handle;
+  if (Error err = memory_handle.alloc(data.size(), limits, "text item")) {
+    return err;
+  }
   m_text.assign(reinterpret_cast<const char*>(data.data()), data.size());
+  m_memory_handle = std::move(memory_handle);
   return Error::Ok;
 }

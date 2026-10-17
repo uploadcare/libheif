@@ -1301,7 +1301,8 @@ Error HeifContext::interpret_heif_file_images()
     std::shared_ptr<TextItem> text_item = std::make_shared<TextItem>();
     text_item->set_item_id(id);
 
-    auto textDataResult = m_heif_file->get_uncompressed_item_data(id);
+    MemoryHandle input_memory_handle;
+    auto textDataResult = m_heif_file->get_uncompressed_item_data(id, &input_memory_handle);
     if (!textDataResult) {
       if (textDataResult.error().error_code == heif_error_Unsupported_feature) {
         // content_encoding that we cannot decode: this is not a text item we can use, but
@@ -1312,7 +1313,9 @@ Error HeifContext::interpret_heif_file_images()
       return textDataResult.error();
     }
 
-    text_item->parse(*textDataResult);
+    if (Error err = text_item->parse(*textDataResult, get_security_limits())) {
+      return err;
+    }
     if (iref_box) {
       std::vector<Box_iref::Reference> references = iref_box->get_references_from(id);
       for (const auto& ref : references) {
