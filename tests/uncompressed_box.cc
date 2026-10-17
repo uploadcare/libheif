@@ -826,8 +826,10 @@ TEST_CASE("snuc")
   nuc.nuc_is_applied = true;
   nuc.image_width = 2;
   nuc.image_height = 1;
-  nuc.nuc_gains = {1.0f, 2.0f};
-  nuc.nuc_offsets = {0.0f, 3.0f};
+  auto data = std::make_shared<SensorNonUniformityCorrection::Data>();
+  data->nuc_gains = {1.0f, 2.0f};
+  data->nuc_offsets = {0.0f, 3.0f};
+  nuc.data = std::move(data);
   snuc->set_nuc(nuc);
 
   // Write
@@ -871,12 +873,12 @@ TEST_CASE("snuc")
   REQUIRE(n.nuc_is_applied == true);
   REQUIRE(n.image_width == 2);
   REQUIRE(n.image_height == 1);
-  REQUIRE(n.nuc_gains.size() == 2);
-  REQUIRE(n.nuc_gains[0] == 1.0f);
-  REQUIRE(n.nuc_gains[1] == 2.0f);
-  REQUIRE(n.nuc_offsets.size() == 2);
-  REQUIRE(n.nuc_offsets[0] == 0.0f);
-  REQUIRE(n.nuc_offsets[1] == 3.0f);
+  REQUIRE(n.data->nuc_gains.size() == 2);
+  REQUIRE(n.data->nuc_gains[0] == 1.0f);
+  REQUIRE(n.data->nuc_gains[1] == 2.0f);
+  REQUIRE(n.data->nuc_offsets.size() == 2);
+  REQUIRE(n.data->nuc_offsets[0] == 0.0f);
+  REQUIRE(n.data->nuc_offsets[1] == 3.0f);
 
   // Dump
   Indent indent;

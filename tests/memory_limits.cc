@@ -1654,6 +1654,96 @@ TEST_CASE("file-backed iloc reads reserve each extent before reading payload byt
 
 
 #if WITH_UNCOMPRESSED_CODEC
+TEST_CASE("sensor correction copies retain their payload budget until the last image is destroyed")
+{
+  const std::string copy_method = GENERATE("add", "set", "metadata");
+  StreamWriter writer;
+  writer.write32(61);
+  writer.write32(fourcc("snuc"));
+  writer.write32(0);
+  writer.write32(1);
+  writer.write32(0);
+  writer.write8(0x80);
+  writer.write32(4);
+  writer.write32(1);
+  for (int i = 0; i < 4; i++) writer.write_float32(float(i + 1));
+  for (int i = 0; i < 4; i++) writer.write_float32(float(i));
+
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 32;
+  limits.max_total_memory = 32;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  REQUIRE(parse_box(writer.get_data(), &limits, box) == Error::Ok);
+  auto snuc = std::dynamic_pointer_cast<Box_snuc>(box);
+  REQUIRE(snuc);
+
+  auto source = std::make_unique<ImageDescription>();
+  {
+    SensorNonUniformityCorrection nuc = snuc->get_nuc();
+    nuc.component_ids = {17};
+    source->add_sensor_nuc(nuc);
+  }
+  REQUIRE(snuc->get_nuc().component_ids == std::vector<uint32_t>{0});
+  auto retained = std::make_unique<ImageDescription>();
+  if (copy_method == "add") retained->add_sensor_nuc(source->get_sensor_nuc()[0]);
+  if (copy_method == "set") retained->set_sensor_nuc(source->get_sensor_nuc());
+  if (copy_method == "metadata") retained->copy_metadata_from(*source);
+  REQUIRE(retained->get_sensor_nuc()[0].data == snuc->get_nuc().data);
+  source.reset();
+  snuc.reset();
+  box.reset();
+
+  REQUIRE(retained->get_sensor_nuc().size() == 1);
+  REQUIRE(retained->get_sensor_nuc()[0].component_ids == std::vector<uint32_t>{17});
+  REQUIRE(retained->get_sensor_nuc()[0].data->nuc_gains == std::vector<float>{1, 2, 3, 4});
+  REQUIRE(retained->get_sensor_nuc()[0].data->nuc_offsets == std::vector<float>{0, 1, 2, 3});
+  MemoryHandle probe;
+  Error err = probe.alloc(1, &limits, "sensor correction lifetime probe");
+  REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+  REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  auto another = std::make_unique<ImageDescription>();
+  another->copy_metadata_from(*retained);
+  retained.reset();
+  REQUIRE(probe.alloc(1, &limits, "remaining sensor correction owner") != Error::Ok);
+  another.reset();
+  REQUIRE(probe.alloc(32, &limits, "released sensor correction budget") == Error::Ok);
+}
+
+
+TEST_CASE("sensor correction storage preserves block and total parsing limits")
+{
+  SensorNonUniformityCorrection nuc;
+  nuc.image_width = 4;
+  nuc.image_height = 1;
+  auto data = std::make_shared<SensorNonUniformityCorrection::Data>();
+  data->nuc_gains = {1, 2, 3, 4};
+  data->nuc_offsets = {0, 1, 2, 3};
+  nuc.data = std::move(data);
+  Box_snuc snuc;
+  snuc.set_nuc(nuc);
+  StreamWriter writer;
+  REQUIRE(snuc.write(writer) == Error::Ok);
+
+  const std::string mode = GENERATE("block", "total", "exact", "disabled");
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = mode == "block" ? 31 : mode == "exact" ? 32 : 0;
+  limits.max_total_memory = mode == "total" ? 31 : mode == "exact" ? 32 : 0;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  Error err = parse_box(writer.get_data(), &limits, box);
+  if (mode == "block" || mode == "total") {
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+  else {
+    REQUIRE(err == Error::Ok);
+    StreamWriter roundtrip;
+    REQUIRE(box->write(roundtrip) == Error::Ok);
+    REQUIRE(roundtrip.get_data() == writer.get_data());
+  }
+}
+
 namespace {
 
 class MemoryTestUnciDecoder : public unc_decoder

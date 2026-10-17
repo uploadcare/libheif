@@ -23,6 +23,7 @@
 
 #include "error.h"
 #include "nclx.h"
+#include "security_limits.h"
 #include <libheif/heif_experimental.h>
 #include <libheif/heif_uncompressed.h>
 #include "omaf_boxes.h"
@@ -99,12 +100,19 @@ struct SensorBadPixelsMap
 
 struct SensorNonUniformityCorrection
 {
+  struct Data
+  {
+    // Keep the reservation alive until the last copy releases the arrays.
+    MemoryHandle memory_handle;
+    std::vector<float> nuc_gains;    // image_width * image_height entries
+    std::vector<float> nuc_offsets;  // image_width * image_height entries
+  };
+
   std::vector<uint32_t> component_ids;  // empty = applies to all components. Either cmpd-index or component-id, depending on context.
   bool nuc_is_applied = false;
   uint32_t image_width = 0;
   uint32_t image_height = 0;
-  std::vector<float> nuc_gains;    // image_width * image_height entries
-  std::vector<float> nuc_offsets;  // image_width * image_height entries
+  std::shared_ptr<const Data> data = std::make_shared<Data>();
 };
 
 
