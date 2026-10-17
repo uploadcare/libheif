@@ -313,9 +313,13 @@ Result<std::shared_ptr<HeifPixelImage>> UncompressedImageCodec::create_image(con
 
   if (properties.cpat) {
     const auto& pattern_cmpd = properties.cpat->get_pattern();
+    MemoryHandle indices_memory;
     std::vector<uint32_t> cpat_indices;
-    cpat_indices.reserve(pattern_cmpd.pixels.size());
-    for (const auto& pixel : pattern_cmpd.pixels) {
+    if (auto err = indices_memory.alloc(pattern_cmpd.pixels->values.size(), sizeof(uint32_t), limits, "cpat component indices")) {
+      return err;
+    }
+    cpat_indices.reserve(pattern_cmpd.pixels->values.size());
+    for (const auto& pixel : pattern_cmpd.pixels->values) {
       cpat_indices.push_back(pixel.cmpd_index);
     }
     Error err = validate_component_indices(cpat_indices, cmpd_size, "cpat");
@@ -332,8 +336,13 @@ Result<std::shared_ptr<HeifPixelImage>> UncompressedImageCodec::create_image(con
     BayerPattern pattern;
     pattern.pattern_width = pattern_cmpd.pattern_width;
     pattern.pattern_height = pattern_cmpd.pattern_height;
+    auto pixels = std::make_shared<SensorMetadataArray<heif_bayer_pattern_pixel>>();
+    if (auto err = pixels->memory_handle.alloc(pattern_cmpd.pixels->values.size(), sizeof(heif_bayer_pattern_pixel), limits, "decoded Bayer pattern")) {
+      return err;
+    }
+    pixels->values.reserve(pattern_cmpd.pixels->values.size());
     std::map<uint32_t, uint32_t> cpat_cmpd_idx_to_comp_id;
-    for (auto p : pattern_cmpd.pixels) {
+    for (auto p : pattern_cmpd.pixels->values) {
       uint32_t comp_id;
       auto it = cpat_cmpd_idx_to_comp_id.find(p.cmpd_index);
       if (it != cpat_cmpd_idx_to_comp_id.end()) {
@@ -348,43 +357,56 @@ Result<std::shared_ptr<HeifPixelImage>> UncompressedImageCodec::create_image(con
         comp_id = img->add_component_without_data(components[p.cmpd_index].component_type);
         cpat_cmpd_idx_to_comp_id[p.cmpd_index] = comp_id;
       }
-      pattern.pixels.push_back({comp_id, p.component_gain});
+      pixels->values.push_back({comp_id, p.component_gain});
       cmpd_index_to_comp_ids[p.cmpd_index].push_back(comp_id);
     }
 
+    pattern.pixels = std::move(pixels);
     img->set_bayer_pattern(pattern);
   }
 
   for (const auto& splz_box : properties.splz) {
     const auto& pattern_cmpd = splz_box->get_pattern();
-    Error err = validate_component_indices(pattern_cmpd.component_ids, cmpd_size, "splz");
+    Error err = validate_component_indices(pattern_cmpd.component_ids->values, cmpd_size, "splz");
     if (err) {
       return err;
     }
     PolarizationPattern pattern = pattern_cmpd;
-    pattern.component_ids = map_cmpd_to_component_ids(pattern_cmpd.component_ids, cmpd_index_to_comp_ids);
+    auto ids = map_cmpd_to_component_ids(pattern_cmpd.component_ids->values, cmpd_index_to_comp_ids, limits);
+    if (!ids) {
+      return ids.error();
+    }
+    pattern.component_ids = std::move(*ids);
     img->add_polarization_pattern(pattern);
   }
 
   for (const auto& sbpm_box : properties.sbpm) {
     const auto& bad_pixels_map_cmpd = sbpm_box->get_bad_pixels_map();
-    Error err = validate_component_indices(bad_pixels_map_cmpd.component_ids, cmpd_size, "sbpm");
+    Error err = validate_component_indices(bad_pixels_map_cmpd.component_ids->values, cmpd_size, "sbpm");
     if (err) {
       return err;
     }
     SensorBadPixelsMap bad_pixels_map = bad_pixels_map_cmpd;
-    bad_pixels_map.component_ids = map_cmpd_to_component_ids(bad_pixels_map_cmpd.component_ids, cmpd_index_to_comp_ids);
+    auto ids = map_cmpd_to_component_ids(bad_pixels_map_cmpd.component_ids->values, cmpd_index_to_comp_ids, limits);
+    if (!ids) {
+      return ids.error();
+    }
+    bad_pixels_map.component_ids = std::move(*ids);
     img->add_sensor_bad_pixels_map(bad_pixels_map);
   }
 
   for (const auto& snuc_box : properties.snuc) {
     const auto& nuc_cmpd = snuc_box->get_nuc();
-    Error err = validate_component_indices(nuc_cmpd.component_ids, cmpd_size, "snuc");
+    Error err = validate_component_indices(nuc_cmpd.component_ids->values, cmpd_size, "snuc");
     if (err) {
       return err;
     }
     SensorNonUniformityCorrection nuc = nuc_cmpd;
-    nuc.component_ids = map_cmpd_to_component_ids(nuc_cmpd.component_ids, cmpd_index_to_comp_ids);
+    auto ids = map_cmpd_to_component_ids(nuc_cmpd.component_ids->values, cmpd_index_to_comp_ids, limits);
+    if (!ids) {
+      return ids.error();
+    }
+    nuc.component_ids = std::move(*ids);
     img->add_sensor_nuc(nuc);
   }
 

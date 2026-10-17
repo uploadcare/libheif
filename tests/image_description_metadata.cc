@@ -84,12 +84,12 @@ struct MetadataFixture
 
     polar.pattern_width = 2;
     polar.pattern_height = 2;
-    polar.polarization_angles = {0.0f, 45.0f, 90.0f, 135.0f};
+    polar.polarization_angles = std::make_shared<SensorMetadataArray<float>>(std::vector<float>{0.0f, 45.0f, 90.0f, 135.0f});
 
     badpix.correction_applied = false;
-    badpix.bad_rows = {2};
-    badpix.bad_columns = {3};
-    badpix.bad_pixels.push_back({1, 1});
+    badpix.bad_rows = std::make_shared<SensorMetadataArray<uint32_t>>(std::vector<uint32_t>{2});
+    badpix.bad_columns = std::make_shared<SensorMetadataArray<uint32_t>>(std::vector<uint32_t>{3});
+    badpix.bad_pixels = std::make_shared<SensorMetadataArray<SensorBadPixelsMap::BadPixelCoordinate>>(std::vector<SensorBadPixelsMap::BadPixelCoordinate>{{1, 1}});
 
     nuc.nuc_is_applied = true;
     nuc.image_width = 4;
@@ -140,20 +140,22 @@ build_image(MetadataFixture& fix, uint32_t& comp1, uint32_t& comp2)
   // Bayer pattern referencing the two component IDs (2x2 GBRG-style).
   fix.bayer.pattern_width = 2;
   fix.bayer.pattern_height = 2;
-  fix.bayer.pixels.resize(4);
-  fix.bayer.pixels[0].component_id = comp1;  fix.bayer.pixels[0].component_gain = 1.0f;
-  fix.bayer.pixels[1].component_id = comp2;  fix.bayer.pixels[1].component_gain = 1.0f;
-  fix.bayer.pixels[2].component_id = comp2;  fix.bayer.pixels[2].component_gain = 1.0f;
-  fix.bayer.pixels[3].component_id = comp1;  fix.bayer.pixels[3].component_gain = 1.0f;
+  auto pixels = std::make_shared<SensorMetadataArray<heif_bayer_pattern_pixel>>();
+  pixels->values.resize(4);
+  pixels->values[0].component_id = comp1;  pixels->values[0].component_gain = 1.0f;
+  pixels->values[1].component_id = comp2;  pixels->values[1].component_gain = 1.0f;
+  pixels->values[2].component_id = comp2;  pixels->values[2].component_gain = 1.0f;
+  pixels->values[3].component_id = comp1;  pixels->values[3].component_gain = 1.0f;
+  fix.bayer.pixels = std::move(pixels);
   img->set_bayer_pattern(fix.bayer);
 
-  fix.polar.component_ids = {comp1};
+  fix.polar.component_ids = std::make_shared<SensorMetadataArray<uint32_t>>(std::vector<uint32_t>{comp1});
   img->add_polarization_pattern(fix.polar);
 
-  fix.badpix.component_ids = {comp1};
+  fix.badpix.component_ids = std::make_shared<SensorMetadataArray<uint32_t>>(std::vector<uint32_t>{comp1});
   img->add_sensor_bad_pixels_map(fix.badpix);
 
-  fix.nuc.component_ids = {comp2};
+  fix.nuc.component_ids = std::make_shared<SensorMetadataArray<uint32_t>>(std::vector<uint32_t>{comp2});
   img->add_sensor_nuc(fix.nuc);
 
   img->set_chroma_location(fix.chroma_location);
@@ -200,17 +202,24 @@ static void check_metadata(const std::shared_ptr<HeifPixelImage>& img,
   const BayerPattern& bp = img->get_any_bayer_pattern();
   REQUIRE(bp.pattern_width == fix.bayer.pattern_width);
   REQUIRE(bp.pattern_height == fix.bayer.pattern_height);
-  REQUIRE(bp.pixels.size() == fix.bayer.pixels.size());
+  REQUIRE(bp.pixels->values.size() == fix.bayer.pixels->values.size());
+  REQUIRE(bp.pixels == fix.bayer.pixels);
 
   REQUIRE(img->has_polarization_patterns());
   REQUIRE(img->get_polarization_patterns().size() == 1);
   REQUIRE(img->get_polarization_patterns()[0].pattern_width == fix.polar.pattern_width);
+  REQUIRE(img->get_polarization_patterns()[0].polarization_angles->values == fix.polar.polarization_angles->values);
   REQUIRE(img->get_polarization_patterns()[0].polarization_angles == fix.polar.polarization_angles);
+  REQUIRE(img->get_polarization_patterns()[0].component_ids == fix.polar.component_ids);
 
   REQUIRE(img->has_sensor_bad_pixels_maps());
   REQUIRE(img->get_sensor_bad_pixels_maps().size() == 1);
+  REQUIRE(img->get_sensor_bad_pixels_maps()[0].bad_rows->values == fix.badpix.bad_rows->values);
+  REQUIRE(img->get_sensor_bad_pixels_maps()[0].bad_columns->values == fix.badpix.bad_columns->values);
   REQUIRE(img->get_sensor_bad_pixels_maps()[0].bad_rows == fix.badpix.bad_rows);
   REQUIRE(img->get_sensor_bad_pixels_maps()[0].bad_columns == fix.badpix.bad_columns);
+  REQUIRE(img->get_sensor_bad_pixels_maps()[0].bad_pixels == fix.badpix.bad_pixels);
+  REQUIRE(img->get_sensor_bad_pixels_maps()[0].component_ids == fix.badpix.component_ids);
 
   REQUIRE(img->has_sensor_nuc());
   REQUIRE(img->get_sensor_nuc().size() == 1);

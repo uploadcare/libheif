@@ -1034,18 +1034,20 @@ Error Box_cpat::parse(BitstreamRange& range, const heif_security_limits* limits)
   if (num_pixels > range.get_remaining_bytes() / 8) {
     return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete cpat pixel table"};
   }
-  if (Error err = m_memory_handle.alloc(num_pixels, sizeof(BayerPatternPixelCmpd), limits, "cpat pixel table")) {
+  auto pixels = std::make_shared<SensorMetadataArray<BayerPatternPixelCmpd>>();
+  if (Error err = pixels->memory_handle.alloc(num_pixels, sizeof(BayerPatternPixelCmpd), limits, "cpat pixel table")) {
     return err;
   }
-  m_pattern.pixels.resize(num_pixels);
+  pixels->values.resize(num_pixels);
 
   for (size_t i = 0; i < num_pixels; i++) {
     BayerPatternPixelCmpd pixel{};
     pixel.cmpd_index = range.read32();
     pixel.component_gain = range.read_float32();
-    m_pattern.pixels[i] = pixel;
+    pixels->values[i] = pixel;
   }
 
+  m_pattern.pixels = std::move(pixels);
   return range.get_error();
 }
 
@@ -1057,7 +1059,7 @@ void Box_cpat::dump(std::ostream& sstr, Indent& indent, bool full_log) const
   sstr << indent << "pattern_width: " << get_pattern_width() << "\n";
   sstr << indent << "pattern_height: " << get_pattern_height() << "\n";
 
-  for (const auto& pixel : m_pattern.pixels) {
+  for (const auto& pixel : m_pattern.pixels->values) {
     sstr << indent << "component index: " << pixel.cmpd_index << ", gain: " << pixel.component_gain << "\n";
   }
   return;
@@ -1068,7 +1070,7 @@ Error Box_cpat::write(StreamWriter& writer) const
 {
   size_t box_start = reserve_box_header_space(writer);
 
-  if (m_pattern.pattern_width * size_t{m_pattern.pattern_height} != m_pattern.pixels.size()) {
+  if (m_pattern.pattern_width * size_t{m_pattern.pattern_height} != m_pattern.pixels->values.size()) {
     return {heif_error_Usage_error,
             heif_suberror_Invalid_parameter_value,
             "incorrect number of pattern components"};
@@ -1077,7 +1079,7 @@ Error Box_cpat::write(StreamWriter& writer) const
   writer.write16(m_pattern.pattern_width);
   writer.write16(m_pattern.pattern_height);
 
-  for (const auto& pixel : m_pattern.pixels) {
+  for (const auto& pixel : m_pattern.pixels->values) {
     writer.write32(pixel.cmpd_index);
     writer.write_float32(pixel.component_gain);
   }
@@ -1106,13 +1108,15 @@ Error Box_splz::parse(BitstreamRange& range, const heif_security_limits* limits)
   if (component_count > range.get_remaining_bytes() / 4) {
     return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete splz component table"};
   }
-  if (Error err = m_memory_handle.alloc(component_count, sizeof(uint32_t), limits, "splz component table")) {
+  auto component_ids = std::make_shared<SensorMetadataArray<uint32_t>>();
+  if (Error err = component_ids->memory_handle.alloc(component_count, sizeof(uint32_t), limits, "splz component table")) {
     return err;
   }
-  m_pattern.component_ids.resize(component_count);
+  component_ids->values.resize(component_count);
   for (uint32_t i = 0; i < component_count; i++) {
-    m_pattern.component_ids[i] = range.read32();
+    component_ids->values[i] = range.read32();
   }
+  m_pattern.component_ids = std::move(component_ids);
 
   m_pattern.pattern_width = range.read16();
   m_pattern.pattern_height = range.read16();
@@ -1134,15 +1138,17 @@ Error Box_splz::parse(BitstreamRange& range, const heif_security_limits* limits)
   if (num_pixels > range.get_remaining_bytes() / 4) {
     return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete splz angle table"};
   }
-  if (Error err = m_memory_handle.alloc(num_pixels, sizeof(float), limits, "splz angle table")) {
+  auto angles = std::make_shared<SensorMetadataArray<float>>();
+  if (Error err = angles->memory_handle.alloc(num_pixels, sizeof(float), limits, "splz angle table")) {
     return err;
   }
-  m_pattern.polarization_angles.resize(num_pixels);
+  angles->values.resize(num_pixels);
 
   for (size_t i = 0; i < num_pixels; i++) {
-    m_pattern.polarization_angles[i] = range.read_float32();
+    angles->values[i] = range.read_float32();
   }
 
+  m_pattern.polarization_angles = std::move(angles);
   return range.get_error();
 }
 
@@ -1152,9 +1158,9 @@ void Box_splz::dump(std::ostream& sstr, Indent& indent, bool full_log) const
 
   FullBox::dump(sstr, indent, full_log);
 
-  sstr << indent << "component_count: " << m_pattern.component_ids.size() << "\n";
-  for (size_t i = 0; i < m_pattern.component_ids.size(); i++) {
-    sstr << indent << "  component_index[" << i << "]: " << m_pattern.component_ids[i] << "\n";
+  sstr << indent << "component_count: " << m_pattern.component_ids->values.size() << "\n";
+  for (size_t i = 0; i < m_pattern.component_ids->values.size(); i++) {
+    sstr << indent << "  component_index[" << i << "]: " << m_pattern.component_ids->values[i] << "\n";
   }
 
   sstr << indent << "pattern_width: " << m_pattern.pattern_width << "\n";
@@ -1162,7 +1168,7 @@ void Box_splz::dump(std::ostream& sstr, Indent& indent, bool full_log) const
 
   for (uint16_t y = 0; y < m_pattern.pattern_height; y++) {
     for (uint16_t x = 0; x < m_pattern.pattern_width; x++) {
-      float angle = m_pattern.polarization_angles[y * m_pattern.pattern_width + x];
+      float angle = m_pattern.polarization_angles->values[y * m_pattern.pattern_width + x];
       if (heif_polarization_angle_is_no_filter(angle)) {
         sstr << indent << "  [" << x << "," << y << "]: no filter\n";
       }
@@ -1180,21 +1186,21 @@ Error Box_splz::write(StreamWriter& writer) const
 {
   size_t box_start = reserve_box_header_space(writer);
 
-  if (m_pattern.pattern_width * size_t{m_pattern.pattern_height} != m_pattern.polarization_angles.size()) {
+  if (m_pattern.pattern_width * size_t{m_pattern.pattern_height} != m_pattern.polarization_angles->values.size()) {
     return {heif_error_Usage_error,
             heif_suberror_Invalid_parameter_value,
             "incorrect number of polarization pattern angles"};
   }
 
-  writer.write32(static_cast<uint32_t>(m_pattern.component_ids.size()));
-  for (uint32_t idx : m_pattern.component_ids) {
+  writer.write32(static_cast<uint32_t>(m_pattern.component_ids->values.size()));
+  for (uint32_t idx : m_pattern.component_ids->values) {
     writer.write32(idx);
   }
 
   writer.write16(m_pattern.pattern_width);
   writer.write16(m_pattern.pattern_height);
 
-  for (float angle : m_pattern.polarization_angles) {
+  for (float angle : m_pattern.polarization_angles->values) {
     writer.write_float32(angle);
   }
 
@@ -1223,13 +1229,15 @@ Error Box_sbpm::parse(BitstreamRange& range, const heif_security_limits* limits)
   if (component_count > range.get_remaining_bytes() / 4) {
     return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete sbpm component table"};
   }
-  if (Error err = m_memory_handle.alloc(component_count, sizeof(uint32_t), limits, "sbpm component table")) {
+  auto component_ids = std::make_shared<SensorMetadataArray<uint32_t>>();
+  if (Error err = component_ids->memory_handle.alloc(component_count, sizeof(uint32_t), limits, "sbpm component table")) {
     return err;
   }
-  m_map.component_ids.resize(component_count);
+  component_ids->values.resize(component_count);
   for (uint32_t i = 0; i < component_count; i++) {
-    m_map.component_ids[i] = range.read32();
+    component_ids->values[i] = range.read32();
   }
+  m_map.component_ids = std::move(component_ids);
 
   uint8_t flags = range.read8();
   m_map.correction_applied = !!(flags & 0x80);
@@ -1250,31 +1258,37 @@ Error Box_sbpm::parse(BitstreamRange& range, const heif_security_limits* limits)
   if (table_bytes > range.get_remaining_bytes()) {
     return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete sbpm bad pixel tables"};
   }
-  if (Error err = m_memory_handle.alloc(num_bad_rows, sizeof(uint32_t), limits, "sbpm bad rows")) {
+  auto rows = std::make_shared<SensorMetadataArray<uint32_t>>();
+  auto columns = std::make_shared<SensorMetadataArray<uint32_t>>();
+  auto pixels = std::make_shared<SensorMetadataArray<SensorBadPixelsMap::BadPixelCoordinate>>();
+  if (Error err = rows->memory_handle.alloc(num_bad_rows, sizeof(uint32_t), limits, "sbpm bad rows")) {
     return err;
   }
-  if (Error err = m_memory_handle.alloc(num_bad_cols, sizeof(uint32_t), limits, "sbpm bad columns")) {
+  if (Error err = columns->memory_handle.alloc(num_bad_cols, sizeof(uint32_t), limits, "sbpm bad columns")) {
     return err;
   }
-  if (Error err = m_memory_handle.alloc(num_bad_pixels, sizeof(SensorBadPixelsMap::BadPixelCoordinate), limits, "sbpm bad pixels")) {
+  if (Error err = pixels->memory_handle.alloc(num_bad_pixels, sizeof(SensorBadPixelsMap::BadPixelCoordinate), limits, "sbpm bad pixels")) {
     return err;
   }
-  m_map.bad_rows.resize(num_bad_rows);
+  rows->values.resize(num_bad_rows);
   for (uint32_t i = 0; i < num_bad_rows; i++) {
-    m_map.bad_rows[i] = range.read32();
+    rows->values[i] = range.read32();
   }
 
-  m_map.bad_columns.resize(num_bad_cols);
+  columns->values.resize(num_bad_cols);
   for (uint32_t i = 0; i < num_bad_cols; i++) {
-    m_map.bad_columns[i] = range.read32();
+    columns->values[i] = range.read32();
   }
 
-  m_map.bad_pixels.resize(num_bad_pixels);
+  pixels->values.resize(num_bad_pixels);
   for (uint32_t i = 0; i < num_bad_pixels; i++) {
-    m_map.bad_pixels[i].row = range.read32();
-    m_map.bad_pixels[i].column = range.read32();
+    pixels->values[i].row = range.read32();
+    pixels->values[i].column = range.read32();
   }
 
+  m_map.bad_rows = std::move(rows);
+  m_map.bad_columns = std::move(columns);
+  m_map.bad_pixels = std::move(pixels);
   return range.get_error();
 }
 
@@ -1284,27 +1298,27 @@ void Box_sbpm::dump(std::ostream& sstr, Indent& indent, bool full_log) const
 
   FullBox::dump(sstr, indent, full_log);
 
-  sstr << indent << "component_count: " << m_map.component_ids.size() << "\n";
-  for (size_t i = 0; i < m_map.component_ids.size(); i++) {
-    sstr << indent << "  component_index[" << i << "]: " << m_map.component_ids[i] << "\n";
+  sstr << indent << "component_count: " << m_map.component_ids->values.size() << "\n";
+  for (size_t i = 0; i < m_map.component_ids->values.size(); i++) {
+    sstr << indent << "  component_index[" << i << "]: " << m_map.component_ids->values[i] << "\n";
   }
 
   sstr << indent << "correction_applied: " << m_map.correction_applied << "\n";
 
-  sstr << indent << "num_bad_rows: " << m_map.bad_rows.size() << "\n";
-  for (size_t i = 0; i < m_map.bad_rows.size(); i++) {
-    sstr << indent << "  bad_row[" << i << "]: " << m_map.bad_rows[i] << "\n";
+  sstr << indent << "num_bad_rows: " << m_map.bad_rows->values.size() << "\n";
+  for (size_t i = 0; i < m_map.bad_rows->values.size(); i++) {
+    sstr << indent << "  bad_row[" << i << "]: " << m_map.bad_rows->values[i] << "\n";
   }
 
-  sstr << indent << "num_bad_columns: " << m_map.bad_columns.size() << "\n";
-  for (size_t i = 0; i < m_map.bad_columns.size(); i++) {
-    sstr << indent << "  bad_column[" << i << "]: " << m_map.bad_columns[i] << "\n";
+  sstr << indent << "num_bad_columns: " << m_map.bad_columns->values.size() << "\n";
+  for (size_t i = 0; i < m_map.bad_columns->values.size(); i++) {
+    sstr << indent << "  bad_column[" << i << "]: " << m_map.bad_columns->values[i] << "\n";
   }
 
-  sstr << indent << "num_bad_pixels: " << m_map.bad_pixels.size() << "\n";
-  for (size_t i = 0; i < m_map.bad_pixels.size(); i++) {
-    sstr << indent << "  bad_pixel[" << i << "]: row=" << m_map.bad_pixels[i].row
-         << ", column=" << m_map.bad_pixels[i].column << "\n";
+  sstr << indent << "num_bad_pixels: " << m_map.bad_pixels->values.size() << "\n";
+  for (size_t i = 0; i < m_map.bad_pixels->values.size(); i++) {
+    sstr << indent << "  bad_pixel[" << i << "]: row=" << m_map.bad_pixels->values[i].row
+         << ", column=" << m_map.bad_pixels->values[i].column << "\n";
   }
 
   return;
@@ -1315,27 +1329,27 @@ Error Box_sbpm::write(StreamWriter& writer) const
 {
   size_t box_start = reserve_box_header_space(writer);
 
-  writer.write32(static_cast<uint32_t>(m_map.component_ids.size()));
-  for (uint32_t idx : m_map.component_ids) {
+  writer.write32(static_cast<uint32_t>(m_map.component_ids->values.size()));
+  for (uint32_t idx : m_map.component_ids->values) {
     writer.write32(idx);
   }
 
   uint8_t flags = m_map.correction_applied ? 0x80 : 0;
   writer.write8(flags);
 
-  writer.write32(static_cast<uint32_t>(m_map.bad_rows.size()));
-  writer.write32(static_cast<uint32_t>(m_map.bad_columns.size()));
-  writer.write32(static_cast<uint32_t>(m_map.bad_pixels.size()));
+  writer.write32(static_cast<uint32_t>(m_map.bad_rows->values.size()));
+  writer.write32(static_cast<uint32_t>(m_map.bad_columns->values.size()));
+  writer.write32(static_cast<uint32_t>(m_map.bad_pixels->values.size()));
 
-  for (uint32_t row : m_map.bad_rows) {
+  for (uint32_t row : m_map.bad_rows->values) {
     writer.write32(row);
   }
 
-  for (uint32_t col : m_map.bad_columns) {
+  for (uint32_t col : m_map.bad_columns->values) {
     writer.write32(col);
   }
 
-  for (const auto& pixel : m_map.bad_pixels) {
+  for (const auto& pixel : m_map.bad_pixels->values) {
     writer.write32(pixel.row);
     writer.write32(pixel.column);
   }
@@ -1362,10 +1376,18 @@ Error Box_snuc::parse(BitstreamRange& range, const heif_security_limits* limits)
             "snuc component_count exceeds security limit."};
   }
 
-  m_nuc.component_ids.resize(component_count);
-  for (uint32_t i = 0; i < component_count; i++) {
-    m_nuc.component_ids[i] = range.read32();
+  if (component_count > range.get_remaining_bytes() / 4) {
+    return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete snuc component table"};
   }
+  auto component_ids = std::make_shared<SensorMetadataArray<uint32_t>>();
+  if (Error err = component_ids->memory_handle.alloc(component_count, sizeof(uint32_t), limits, "snuc component table")) {
+    return err;
+  }
+  component_ids->values.resize(component_count);
+  for (uint32_t i = 0; i < component_count; i++) {
+    component_ids->values[i] = range.read32();
+  }
+  m_nuc.component_ids = std::move(component_ids);
 
   uint8_t flags = range.read8();
   m_nuc.nuc_is_applied = !!(flags & 0x80);
@@ -1387,6 +1409,9 @@ Error Box_snuc::parse(BitstreamRange& range, const heif_security_limits* limits)
             "snuc image dimensions exceed security limit."};
   }
 
+  if (num_pixels > range.get_remaining_bytes() / 8) {
+    return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete snuc correction tables"};
+  }
   auto data = std::make_shared<SensorNonUniformityCorrection::Data>();
   Error err = data->memory_handle.alloc(num_pixels, 2 * sizeof(float), limits, "snuc box");
   if (err) {
@@ -1413,9 +1438,9 @@ void Box_snuc::dump(std::ostream& sstr, Indent& indent, bool full_log) const
 
   FullBox::dump(sstr, indent, full_log);
 
-  sstr << indent << "component_count: " << m_nuc.component_ids.size() << "\n";
-  for (size_t i = 0; i < m_nuc.component_ids.size(); i++) {
-    sstr << indent << "  component_index[" << i << "]: " << m_nuc.component_ids[i] << "\n";
+  sstr << indent << "component_count: " << m_nuc.component_ids->values.size() << "\n";
+  for (size_t i = 0; i < m_nuc.component_ids->values.size(); i++) {
+    sstr << indent << "  component_index[" << i << "]: " << m_nuc.component_ids->values[i] << "\n";
   }
 
   sstr << indent << "nuc_is_applied: " << m_nuc.nuc_is_applied << "\n";
@@ -1434,8 +1459,8 @@ Error Box_snuc::write(StreamWriter& writer) const
 {
   size_t box_start = reserve_box_header_space(writer);
 
-  writer.write32(static_cast<uint32_t>(m_nuc.component_ids.size()));
-  for (uint32_t idx : m_nuc.component_ids) {
+  writer.write32(static_cast<uint32_t>(m_nuc.component_ids->values.size()));
+  for (uint32_t idx : m_nuc.component_ids->values) {
     writer.write32(idx);
   }
 

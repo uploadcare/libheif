@@ -503,7 +503,7 @@ heif_error heif_image_set_bayer_pattern(heif_image* image,
   pattern.pattern_height = pattern_height;
 
   size_t num_pixels = size_t{pattern_width} * pattern_height;
-  pattern.pixels.assign(patternPixels, patternPixels + num_pixels);
+  pattern.pixels = std::make_shared<SensorMetadataArray<heif_bayer_pattern_pixel>>(std::vector<heif_bayer_pattern_pixel>(patternPixels, patternPixels + num_pixels));
 
   image->image->set_bayer_pattern(pattern);
 
@@ -569,7 +569,7 @@ heif_error heif_image_get_bayer_pattern(const heif_image* image,
 
   const BayerPattern& pattern = image->image->get_bayer_pattern(bayer_component_id);
   size_t num_pixels = size_t{pattern.pattern_width} * pattern.pattern_height;
-  std::copy(pattern.pixels.begin(), pattern.pixels.begin() + num_pixels, out_patternPixels);
+  std::copy(pattern.pixels->values.begin(), pattern.pixels->values.begin() + num_pixels, out_patternPixels);
 
   return heif_error_success;
 }
@@ -614,12 +614,12 @@ heif_error heif_image_add_polarization_pattern(heif_image* image,
   }
 
   PolarizationPattern pattern;
-  pattern.component_ids.assign(component_ids, component_ids + num_component_ids);
+  pattern.component_ids = std::make_shared<SensorMetadataArray<uint32_t>>(std::vector<uint32_t>(component_ids, component_ids + num_component_ids));
   pattern.pattern_width = pattern_width;
   pattern.pattern_height = pattern_height;
 
   size_t num_pixels = size_t{pattern_width} * pattern_height;
-  pattern.polarization_angles.assign(polarization_angles, polarization_angles + num_pixels);
+  pattern.polarization_angles = std::make_shared<SensorMetadataArray<float>>(std::vector<float>(polarization_angles, polarization_angles + num_pixels));
 
   image->image->add_polarization_pattern(pattern);
 
@@ -656,7 +656,7 @@ heif_error heif_image_get_polarization_pattern_info(const heif_image* image,
 
   const auto& p = patterns[pattern_index];
   if (out_num_component_ids) {
-    *out_num_component_ids = static_cast<uint32_t>(p.component_ids.size());
+    *out_num_component_ids = static_cast<uint32_t>(p.component_ids->values.size());
   }
   if (out_pattern_width) {
     *out_pattern_width = p.pattern_width;
@@ -687,12 +687,12 @@ heif_error heif_image_get_polarization_pattern_data(const heif_image* image,
 
   const auto& p = patterns[pattern_index];
 
-  if (out_component_ids && !p.component_ids.empty()) {
-    std::copy(p.component_ids.begin(), p.component_ids.end(), out_component_ids);
+  if (out_component_ids && !p.component_ids->values.empty()) {
+    std::copy(p.component_ids->values.begin(), p.component_ids->values.end(), out_component_ids);
   }
 
   size_t num_pixels = size_t{p.pattern_width} * p.pattern_height;
-  std::copy(p.polarization_angles.begin(), p.polarization_angles.begin() + num_pixels, out_polarization_angles);
+  std::copy(p.polarization_angles->values.begin(), p.polarization_angles->values.begin() + num_pixels, out_polarization_angles);
 
   return heif_error_success;
 }
@@ -708,11 +708,11 @@ int heif_image_get_polarization_pattern_index_for_component(const heif_image* im
   const auto& patterns = image->image->get_polarization_patterns();
   for (size_t i = 0; i < patterns.size(); i++) {
     const auto& p = patterns[i];
-    if (p.component_ids.empty()) {
+    if (p.component_ids->values.empty()) {
       // Empty component list means pattern applies to all components.
       return static_cast<int>(i);
     }
-    for (uint32_t idx : p.component_ids) {
+    for (uint32_t idx : p.component_ids->values) {
       if (idx == component_id) {
         return static_cast<int>(i);
       }
@@ -755,17 +755,19 @@ heif_error heif_image_add_sensor_bad_pixels_map(heif_image* image,
   }
 
   SensorBadPixelsMap map;
-  map.component_ids.assign(component_ids, component_ids + num_component_ids);
+  map.component_ids = std::make_shared<SensorMetadataArray<uint32_t>>(std::vector<uint32_t>(component_ids, component_ids + num_component_ids));
   map.correction_applied = (correction_applied != 0);
 
-  map.bad_rows.assign(bad_rows, bad_rows + num_bad_rows);
-  map.bad_columns.assign(bad_columns, bad_columns + num_bad_columns);
+  map.bad_rows = std::make_shared<SensorMetadataArray<uint32_t>>(std::vector<uint32_t>(bad_rows, bad_rows + num_bad_rows));
+  map.bad_columns = std::make_shared<SensorMetadataArray<uint32_t>>(std::vector<uint32_t>(bad_columns, bad_columns + num_bad_columns));
 
-  map.bad_pixels.resize(num_bad_pixels);
+  auto pixels = std::make_shared<SensorMetadataArray<SensorBadPixelsMap::BadPixelCoordinate>>();
+  pixels->values.resize(num_bad_pixels);
   for (uint32_t i = 0; i < num_bad_pixels; i++) {
-    map.bad_pixels[i].row = bad_pixels[i].row;
-    map.bad_pixels[i].column = bad_pixels[i].column;
+    pixels->values[i].row = bad_pixels[i].row;
+    pixels->values[i].column = bad_pixels[i].column;
   }
+  map.bad_pixels = std::move(pixels);
 
   image->image->add_sensor_bad_pixels_map(map);
 
@@ -804,19 +806,19 @@ heif_error heif_image_get_sensor_bad_pixels_map_info(const heif_image* image,
 
   const auto& m = maps[map_index];
   if (out_num_component_ids) {
-    *out_num_component_ids = static_cast<uint32_t>(m.component_ids.size());
+    *out_num_component_ids = static_cast<uint32_t>(m.component_ids->values.size());
   }
   if (out_correction_applied) {
     *out_correction_applied = m.correction_applied ? 1 : 0;
   }
   if (out_num_bad_rows) {
-    *out_num_bad_rows = static_cast<uint32_t>(m.bad_rows.size());
+    *out_num_bad_rows = static_cast<uint32_t>(m.bad_rows->values.size());
   }
   if (out_num_bad_columns) {
-    *out_num_bad_columns = static_cast<uint32_t>(m.bad_columns.size());
+    *out_num_bad_columns = static_cast<uint32_t>(m.bad_columns->values.size());
   }
   if (out_num_bad_pixels) {
-    *out_num_bad_pixels = static_cast<uint32_t>(m.bad_pixels.size());
+    *out_num_bad_pixels = static_cast<uint32_t>(m.bad_pixels->values.size());
   }
 
   return heif_error_success;
@@ -843,22 +845,22 @@ heif_error heif_image_get_sensor_bad_pixels_map_data(const heif_image* image,
 
   const auto& m = maps[map_index];
 
-  if (out_component_ids && !m.component_ids.empty()) {
-    std::copy(m.component_ids.begin(), m.component_ids.end(), out_component_ids);
+  if (out_component_ids && !m.component_ids->values.empty()) {
+    std::copy(m.component_ids->values.begin(), m.component_ids->values.end(), out_component_ids);
   }
 
-  if (out_bad_rows && !m.bad_rows.empty()) {
-    std::copy(m.bad_rows.begin(), m.bad_rows.end(), out_bad_rows);
+  if (out_bad_rows && !m.bad_rows->values.empty()) {
+    std::copy(m.bad_rows->values.begin(), m.bad_rows->values.end(), out_bad_rows);
   }
 
-  if (out_bad_columns && !m.bad_columns.empty()) {
-    std::copy(m.bad_columns.begin(), m.bad_columns.end(), out_bad_columns);
+  if (out_bad_columns && !m.bad_columns->values.empty()) {
+    std::copy(m.bad_columns->values.begin(), m.bad_columns->values.end(), out_bad_columns);
   }
 
-  if (out_bad_pixels && !m.bad_pixels.empty()) {
-    for (size_t i = 0; i < m.bad_pixels.size(); i++) {
-      out_bad_pixels[i].row = m.bad_pixels[i].row;
-      out_bad_pixels[i].column = m.bad_pixels[i].column;
+  if (out_bad_pixels && !m.bad_pixels->values.empty()) {
+    for (size_t i = 0; i < m.bad_pixels->values.size(); i++) {
+      out_bad_pixels[i].row = m.bad_pixels->values[i].row;
+      out_bad_pixels[i].column = m.bad_pixels->values[i].column;
     }
   }
 
@@ -890,7 +892,7 @@ heif_error heif_image_add_sensor_nuc(heif_image* image,
   }
 
   SensorNonUniformityCorrection nuc;
-  nuc.component_ids.assign(component_ids, component_ids + num_component_ids);
+  nuc.component_ids = std::make_shared<SensorMetadataArray<uint32_t>>(std::vector<uint32_t>(component_ids, component_ids + num_component_ids));
   nuc.nuc_is_applied = (nuc_is_applied != 0);
   nuc.image_width = image_width;
   nuc.image_height = image_height;
@@ -937,7 +939,7 @@ heif_error heif_image_get_sensor_nuc_info(const heif_image* image,
 
   const auto& n = nucs[nuc_index];
   if (out_num_component_ids) {
-    *out_num_component_ids = static_cast<uint32_t>(n.component_ids.size());
+    *out_num_component_ids = static_cast<uint32_t>(n.component_ids->values.size());
   }
   if (out_nuc_is_applied) {
     *out_nuc_is_applied = n.nuc_is_applied ? 1 : 0;
@@ -972,8 +974,8 @@ heif_error heif_image_get_sensor_nuc_data(const heif_image* image,
 
   const auto& n = nucs[nuc_index];
 
-  if (out_component_ids && !n.component_ids.empty()) {
-    std::copy(n.component_ids.begin(), n.component_ids.end(), out_component_ids);
+  if (out_component_ids && !n.component_ids->values.empty()) {
+    std::copy(n.component_ids->values.begin(), n.component_ids->values.end(), out_component_ids);
   }
 
   size_t num_pixels = size_t{n.image_width} * n.image_height;

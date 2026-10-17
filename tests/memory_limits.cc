@@ -1654,6 +1654,79 @@ TEST_CASE("file-backed iloc reads reserve each extent before reading payload byt
 
 
 #if WITH_UNCOMPRESSED_CODEC
+TEST_CASE("sensor pattern copies retain their parsed payload budget")
+{
+  const std::string kind = GENERATE("cpat", "splz", "sbpm");
+  const auto bytes = make_box(kind, 2);
+  const size_t budget = kind == "cpat" ? 16 : kind == "splz" ? 16 : 40;
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = budget;
+  limits.max_total_memory = budget;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  REQUIRE(parse_box(bytes, &limits, box) == Error::Ok);
+  std::shared_ptr<Box> retained;
+  if (kind == "cpat") {
+    auto copy = std::make_shared<Box_cpat>();
+    copy->set_pattern(std::dynamic_pointer_cast<Box_cpat>(box)->get_pattern());
+    retained = copy;
+  }
+  else if (kind == "splz") {
+    auto source = std::make_unique<ImageDescription>();
+    source->add_polarization_pattern(std::dynamic_pointer_cast<Box_splz>(box)->get_pattern());
+    ImageDescription image;
+    image.copy_metadata_from(*source);
+    source.reset();
+    auto copy = std::make_shared<Box_splz>();
+    copy->set_pattern(image.get_polarization_patterns()[0]);
+    retained = copy;
+  }
+  else {
+    auto source = std::make_unique<ImageDescription>();
+    source->add_sensor_bad_pixels_map(std::dynamic_pointer_cast<Box_sbpm>(box)->get_bad_pixels_map());
+    ImageDescription image;
+    image.copy_metadata_from(*source);
+    source.reset();
+    auto copy = std::make_shared<Box_sbpm>();
+    copy->set_bad_pixels_map(image.get_sensor_bad_pixels_maps()[0]);
+    retained = copy;
+  }
+  box.reset();
+  StreamWriter writer;
+  REQUIRE(retained->write(writer) == Error::Ok);
+  REQUIRE(writer.get_data() == bytes);
+  MemoryHandle probe;
+  REQUIRE(probe.alloc(1, &limits, "retained sensor pattern").sub_error_code == heif_suberror_Security_limit_exceeded);
+  retained.reset();
+  REQUIRE(probe.alloc(budget, &limits, "released sensor pattern") == Error::Ok);
+}
+
+
+TEST_CASE("truncated snuc tables are rejected before reserving declared storage")
+{
+  const bool components = GENERATE(false, true);
+  StreamWriter writer;
+  writer.write32(components ? 16 : 25);
+  writer.write32(fourcc("snuc"));
+  writer.write32(0);
+  writer.write32(components ? 256 : 0);
+  if (!components) {
+    writer.write8(0);
+    writer.write32(4096);
+    writer.write32(4096);
+  }
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = 1;
+  limits.max_total_memory = 1;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  Error err = parse_box(writer.get_data(), &limits, box);
+  REQUIRE(err.error_code == heif_error_Invalid_input);
+  REQUIRE(err.sub_error_code == heif_suberror_End_of_data);
+  REQUIRE(tracker.get_max_total_memory_used() == 0);
+}
+
+
 TEST_CASE("sensor correction copies retain their payload budget until the last image is destroyed")
 {
   const std::string copy_method = GENERATE("add", "set", "metadata");
@@ -1671,7 +1744,7 @@ TEST_CASE("sensor correction copies retain their payload budget until the last i
 
   heif_security_limits limits = *heif_get_global_security_limits();
   limits.max_memory_block_size = 32;
-  limits.max_total_memory = 32;
+  limits.max_total_memory = 40; // Parsed IDs, remapped IDs and the two float arrays.
   TotalMemoryTracker tracker(&limits);
   std::shared_ptr<Box> box;
   REQUIRE(parse_box(writer.get_data(), &limits, box) == Error::Ok);
@@ -1681,10 +1754,12 @@ TEST_CASE("sensor correction copies retain their payload budget until the last i
   auto source = std::make_unique<ImageDescription>();
   {
     SensorNonUniformityCorrection nuc = snuc->get_nuc();
-    nuc.component_ids = {17};
+    auto ids = map_cmpd_to_component_ids(nuc.component_ids->values, {{17}}, &limits);
+    REQUIRE(ids);
+    nuc.component_ids = std::move(*ids);
     source->add_sensor_nuc(nuc);
   }
-  REQUIRE(snuc->get_nuc().component_ids == std::vector<uint32_t>{0});
+  REQUIRE(snuc->get_nuc().component_ids->values == std::vector<uint32_t>{0});
   auto retained = std::make_unique<ImageDescription>();
   if (copy_method == "add") retained->add_sensor_nuc(source->get_sensor_nuc()[0]);
   if (copy_method == "set") retained->set_sensor_nuc(source->get_sensor_nuc());
@@ -1693,9 +1768,10 @@ TEST_CASE("sensor correction copies retain their payload budget until the last i
   source.reset();
   snuc.reset();
   box.reset();
+  limits.max_total_memory = 36; // Only the remapped IDs and float arrays remain.
 
   REQUIRE(retained->get_sensor_nuc().size() == 1);
-  REQUIRE(retained->get_sensor_nuc()[0].component_ids == std::vector<uint32_t>{17});
+  REQUIRE(retained->get_sensor_nuc()[0].component_ids->values == std::vector<uint32_t>{17});
   REQUIRE(retained->get_sensor_nuc()[0].data->nuc_gains == std::vector<float>{1, 2, 3, 4});
   REQUIRE(retained->get_sensor_nuc()[0].data->nuc_offsets == std::vector<float>{0, 1, 2, 3});
   MemoryHandle probe;
@@ -1708,6 +1784,121 @@ TEST_CASE("sensor correction copies retain their payload budget until the last i
   REQUIRE(probe.alloc(1, &limits, "remaining sensor correction owner") != Error::Ok);
   another.reset();
   REQUIRE(probe.alloc(32, &limits, "released sensor correction budget") == Error::Ok);
+  MemoryHandle id_probe;
+  REQUIRE(id_probe.alloc(4, &limits, "released sensor component budget") == Error::Ok);
+}
+
+
+TEST_CASE("snuc component tables independently obey block and total limits")
+{
+  StreamWriter writer;
+  writer.write32(65);
+  writer.write32(fourcc("snuc"));
+  writer.write32(0);
+  writer.write32(8);
+  for (int i = 0; i < 8; i++) writer.write32(static_cast<uint32_t>(i));
+  writer.write8(0);
+  writer.write32(1);
+  writer.write32(1);
+  writer.write_float32(1);
+  writer.write_float32(0);
+  const std::string mode = GENERATE("block", "total", "exact", "disabled");
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = mode == "block" ? 31 : mode == "exact" ? 32 : 0;
+  limits.max_total_memory = mode == "total" ? 31 : mode == "exact" ? 40 : 0;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  Error err = parse_box(writer.get_data(), &limits, box);
+  if (mode == "block" || mode == "total") {
+    REQUIRE(err.error_code == heif_error_Memory_allocation_error);
+    REQUIRE(err.sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+  else {
+    REQUIRE(err == Error::Ok);
+    auto snuc = std::dynamic_pointer_cast<Box_snuc>(box);
+    REQUIRE(snuc->get_nuc().component_ids->values == std::vector<uint32_t>{0, 1, 2, 3, 4, 5, 6, 7});
+  }
+}
+
+
+TEST_CASE("decoded Bayer tables obey allocation budgets and stay charged through image copies")
+{
+  const std::string mode = GENERATE("block", "total", "exact");
+  constexpr uint32_t count = 1024;
+  constexpr size_t table_bytes = count * sizeof(heif_bayer_pattern_pixel);
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_bayer_pattern_pixels = count;
+  TotalMemoryTracker tracker(&limits);
+  std::shared_ptr<Box> box;
+  REQUIRE(parse_box(make_box("cpat", count), &limits, box) == Error::Ok);
+  auto cmpd = std::make_shared<Box_cmpd>();
+  cmpd->add_component({heif_cmpd_component_type_monochrome, {}});
+  auto config = std::make_shared<Box_uncC>();
+  config->add_component({0, 8, 0, 0});
+  UncompressedImageCodec::unci_properties properties;
+  properties.cmpd = cmpd;
+  properties.uncC = config;
+  std::vector<uint32_t> component_ids;
+  {
+    auto image = UncompressedImageCodec::create_image(properties, 1, 1, component_ids, &limits);
+    REQUIRE(image);
+  }
+  // Include the same pixel-plane allocation as a decode without a Bayer table.
+  const size_t peak_budget = tracker.get_max_total_memory_used() + count * sizeof(uint32_t) + table_bytes;
+  properties.cpat = std::dynamic_pointer_cast<Box_cpat>(box);
+  limits.max_memory_block_size = mode == "block" ? table_bytes - 1 : table_bytes;
+  limits.max_total_memory = mode == "total" ? peak_budget - 1 : peak_budget;
+  auto result = UncompressedImageCodec::create_image(properties, 1, 1, component_ids, &limits);
+  if (mode == "block" || mode == "total") {
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+  else {
+    REQUIRE(result);
+    auto image = std::move(*result);
+    const auto& pattern = image->get_any_bayer_pattern();
+    REQUIRE(pattern.pixels->values.size() == count);
+    REQUIRE(pattern.pixels->values.front().component_gain == 1);
+    REQUIRE(image->find_component_description(pattern.pixels->values.front().component_id));
+    auto retained = std::make_unique<ImageDescription>();
+    retained->copy_metadata_from(*image);
+    image.reset();
+    properties.cpat.reset();
+    box.reset();
+    limits.max_total_memory = table_bytes;
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(1, &limits, "retained decoded Bayer table") != Error::Ok);
+    retained.reset();
+    REQUIRE(probe.alloc(table_bytes, &limits, "released decoded Bayer table") == Error::Ok);
+  }
+}
+
+
+TEST_CASE("sensor component remapping reserves its complete output before copying")
+{
+  const std::string mode = GENERATE("block", "total", "exact", "disabled");
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = mode == "block" ? 15 : mode == "exact" ? 16 : 0;
+  limits.max_total_memory = mode == "total" ? 15 : mode == "exact" ? 16 : 0;
+  TotalMemoryTracker tracker(&limits);
+  auto result = map_cmpd_to_component_ids({0, 1}, {{17, 18}, {17, 19}}, &limits);
+  if (mode == "block" || mode == "total") {
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+  else {
+    REQUIRE(result);
+    auto ids = std::move(*result);
+    REQUIRE(ids->values == std::vector<uint32_t>{17, 18, 19});
+    if (mode == "exact") {
+      auto retained = ids;
+      ids.reset();
+      MemoryHandle probe;
+      REQUIRE(probe.alloc(1, &limits, "retained mapped IDs") != Error::Ok);
+      retained.reset();
+      REQUIRE(probe.alloc(16, &limits, "released mapped IDs") == Error::Ok);
+    }
+  }
 }
 
 

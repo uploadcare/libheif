@@ -115,7 +115,7 @@ void ImageItem_uncompressed::populate_component_descriptions()
   // pixels that share a cmpd_index share the same component id; the
   // BayerPattern only carries per-pixel gain, not per-pixel identity.
   if (auto cpat = get_property<Box_cpat>()) {
-    for (const auto& pixel : cpat->get_pattern().pixels) {
+    for (const auto& pixel : cpat->get_pattern().pixels->values) {
       if (pixel.cmpd_index >= cmpd_components.size()) continue;
       if (cmpd_index_has_description[pixel.cmpd_index]) continue;
 

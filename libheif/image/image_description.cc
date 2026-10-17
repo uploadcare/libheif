@@ -68,10 +68,13 @@ BayerPatternCmpd BayerPattern::resolve_to_cmpd(std::map<uint32_t, uint32_t> comp
   cpat.pattern_width = pattern_width;
   cpat.pattern_height = pattern_height;
 
-  for (auto p : pixels) {
+  auto pixels_cmpd = std::make_shared<SensorMetadataArray<BayerPatternPixelCmpd>>();
+  pixels_cmpd->values.reserve(pixels->values.size());
+  for (auto p : pixels->values) {
     assert(comp_id_to_cmpd.find(p.component_id) != comp_id_to_cmpd.end());
-    cpat.pixels.push_back({comp_id_to_cmpd[p.component_id], p.component_gain});
+    pixels_cmpd->values.push_back({comp_id_to_cmpd[p.component_id], p.component_gain});
   }
+  cpat.pixels = std::move(pixels_cmpd);
 
   return cpat;
 }
@@ -98,18 +101,33 @@ std::vector<uint32_t> map_component_ids_to_cmpd(const std::vector<uint32_t>& com
   return cmpd_indices;
 }
 
-std::vector<uint32_t> map_cmpd_to_component_ids(const std::vector<uint32_t>& cmpd_indices, const std::vector<std::vector<uint32_t>>& cmpd_to_comp_ids)
+Result<std::shared_ptr<const SensorMetadataArray<uint32_t>>> map_cmpd_to_component_ids(const std::vector<uint32_t>& cmpd_indices,
+                                                                                     const std::vector<std::vector<uint32_t>>& cmpd_to_comp_ids,
+                                                                                     const heif_security_limits* limits)
 {
-  std::vector<uint32_t> component_ids;
+  auto component_ids = std::make_shared<SensorMetadataArray<uint32_t>>();
+  size_t count = 0;
+  for (uint32_t idx : cmpd_indices) {
+    assert(idx < cmpd_to_comp_ids.size());
+    if (cmpd_to_comp_ids[idx].size() > SIZE_MAX - count) {
+      return Error{heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+                   "Sensor component table size exceeds supported range"};
+    }
+    count += cmpd_to_comp_ids[idx].size();
+  }
+  if (auto err = component_ids->memory_handle.alloc(count, sizeof(uint32_t), limits, "sensor component mapping")) {
+    return err;
+  }
+  component_ids->values.reserve(count);
 
   for (uint32_t idx : cmpd_indices) {
     assert(idx < cmpd_to_comp_ids.size());
-    component_ids.insert(component_ids.end(), cmpd_to_comp_ids[idx].begin(), cmpd_to_comp_ids[idx].end());
+    component_ids->values.insert(component_ids->values.end(), cmpd_to_comp_ids[idx].begin(), cmpd_to_comp_ids[idx].end());
   }
 
-  remove_duplicates(component_ids);
+  remove_duplicates(component_ids->values);
 
-  return component_ids;
+  return std::shared_ptr<const SensorMetadataArray<uint32_t>>(std::move(component_ids));
 }
 
 

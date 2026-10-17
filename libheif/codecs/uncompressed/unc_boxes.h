@@ -375,7 +375,6 @@ public:
 protected:
   Error parse(BitstreamRange& range, const heif_security_limits* limits) override;
 
-  MemoryHandle m_memory_handle;
   BayerPatternCmpd m_pattern;
 };
 
@@ -405,7 +404,6 @@ public:
 protected:
   Error parse(BitstreamRange& range, const heif_security_limits* limits) override;
 
-  MemoryHandle m_memory_handle;
   PolarizationPattern m_pattern;
 };
 
@@ -433,7 +431,6 @@ public:
 protected:
   Error parse(BitstreamRange& range, const heif_security_limits* limits) override;
 
-  MemoryHandle m_memory_handle;
   SensorBadPixelsMap m_map;
 };
 

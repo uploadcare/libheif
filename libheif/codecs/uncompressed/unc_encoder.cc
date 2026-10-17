@@ -128,7 +128,7 @@ unc_encoder::unc_encoder(const std::shared_ptr<const HeifPixelImage>& image)
   if (image->has_polarization_patterns()) {
     for (const auto& pol : image->get_polarization_patterns()) {
       PolarizationPattern polCmpd = pol;
-      polCmpd.component_ids = map_component_ids_to_cmpd(pol.component_ids, m_map_id_to_cmpd_index);
+      polCmpd.component_ids = std::make_shared<SensorMetadataArray<uint32_t>>(map_component_ids_to_cmpd(pol.component_ids->values, m_map_id_to_cmpd_index));
       auto splz = std::make_shared<Box_splz>();
       splz->set_pattern(polCmpd);
       m_splz.push_back(splz);
@@ -138,7 +138,7 @@ unc_encoder::unc_encoder(const std::shared_ptr<const HeifPixelImage>& image)
   if (image->has_sensor_bad_pixels_maps()) {
     for (const auto& bpm : image->get_sensor_bad_pixels_maps()) {
       SensorBadPixelsMap bpmCmpd = bpm;
-      bpmCmpd.component_ids = map_component_ids_to_cmpd(bpm.component_ids, m_map_id_to_cmpd_index);
+      bpmCmpd.component_ids = std::make_shared<SensorMetadataArray<uint32_t>>(map_component_ids_to_cmpd(bpm.component_ids->values, m_map_id_to_cmpd_index));
       auto sbpm = std::make_shared<Box_sbpm>();
       sbpm->set_bad_pixels_map(bpmCmpd);
       m_sbpm.push_back(sbpm);
@@ -148,7 +148,7 @@ unc_encoder::unc_encoder(const std::shared_ptr<const HeifPixelImage>& image)
   if (image->has_sensor_nuc()) {
     for (const auto& nuc : image->get_sensor_nuc()) {
       SensorNonUniformityCorrection nucCmpd = nuc;
-      nucCmpd.component_ids = map_component_ids_to_cmpd(nuc.component_ids, m_map_id_to_cmpd_index);
+      nucCmpd.component_ids = std::make_shared<SensorMetadataArray<uint32_t>>(map_component_ids_to_cmpd(nuc.component_ids->values, m_map_id_to_cmpd_index));
       auto snuc = std::make_shared<Box_snuc>();
       snuc->set_nuc(nucCmpd);
       m_snuc.push_back(snuc);
