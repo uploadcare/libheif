@@ -92,7 +92,8 @@ private:
 class TiledHeader
 {
 public:
-  Error set_parameters(const heif_tiled_image_parameters& params);
+  Error set_parameters(const heif_tiled_image_parameters& params,
+                       const heif_security_limits* limits = heif_get_global_security_limits());
 
   const heif_tiled_image_parameters& get_parameters() const { return m_parameters; }
 
@@ -138,6 +139,7 @@ private:
   };
 
   // TODO uint64_t m_start_of_offset_table_in_file = 0;
+  MemoryHandle m_memory_handle;
   std::vector<TileOffset> m_offsets;
 
   // TODO size_t m_offset_table_start = 0; // start of offset table (= number of bytes in header)
@@ -199,7 +201,7 @@ public:
 
   // --- tild
 
-  void set_tild_header(const TiledHeader& header) { m_tild_header = header; }
+  void set_tild_header(TiledHeader&& header) { m_tild_header = std::move(header); }
 
   TiledHeader& get_tild_header() { return m_tild_header; }
 

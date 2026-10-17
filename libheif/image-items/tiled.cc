@@ -337,23 +337,26 @@ Error Box_tilC::parse(BitstreamRange& range, const heif_security_limits* limits)
 }
 
 
-Error TiledHeader::set_parameters(const heif_tiled_image_parameters& params)
+Error TiledHeader::set_parameters(const heif_tiled_image_parameters& params, const heif_security_limits* limits)
 {
-  m_parameters = params;
-
-  Result<uint64_t> num_tiles_result = number_of_tiles(params, heif_get_global_security_limits());
+  Result<uint64_t> num_tiles_result = number_of_tiles(params, limits);
   if (auto err = num_tiles_result.error()) {
     return err;
   }
 
-  // TODO(security): this offset table is bounded only by max_number_of_tiles
-  // (default 4096*4096 => ~256 MB for the TileOffset vector), and the allocation
-  // is neither counted against max_total_memory via MemoryHandle nor deferred to
-  // decode time. It also uses the global security limits instead of the context
-  // limits. Route this allocation through MemoryHandle and use the context limits
-  // so a small 'tili' file cannot pre-allocate hundreds of MB at file-open time.
-  // (Reported in GHSA-x8xm-cm2c-cfc8, variant V3. 'tili' is experimental.)
+  if (*num_tiles_result > m_offsets.max_size()) {
+    return {heif_error_Memory_allocation_error,
+            heif_suberror_Security_limit_exceeded,
+            "Tili offset table exceeds maximum vector size"};
+  }
+  MemoryHandle memory_handle;
+  if (Error err = memory_handle.alloc(static_cast<size_t>(*num_tiles_result), sizeof(TileOffset),
+                                      limits, "tili offset table")) {
+    return err;
+  }
   m_offsets.resize(*num_tiles_result);
+  m_memory_handle = std::move(memory_handle);
+  m_parameters = params;
 
   for (auto& tile: m_offsets) {
     tile.offset = TILD_OFFSET_NOT_LOADED;
@@ -381,6 +384,7 @@ Error TiledHeader::read_offset_table_range(const std::shared_ptr<HeifFile>& file
                        heif_suberror_Unspecified,
                        "Tili header data incomplete");
 
+  MemoryHandle input_memory_handle;
   std::vector<uint8_t> data;
 
 
@@ -395,7 +399,7 @@ Error TiledHeader::read_offset_table_range(const std::shared_ptr<HeifFile>& file
   //       But this is not easy since our data may span several iloc extents and we have to map this back to item addresses.
   //       Maybe it is easier to just ignore the extra data and rely on the stream read to cache this data.
 
-  Error err = file->append_data_from_iloc(tild_id, data, start_offset, size_to_read);
+  Error err = file->append_data_from_iloc(tild_id, data, start_offset, size_to_read, &input_memory_handle);
   if (err) {
     return err;
   }
@@ -630,7 +634,7 @@ Error ImageItem_Tiled::initialize_decoder()
             "'tili' image with zero width or height."};
   }
 
-  if (Error err = m_tild_header.set_parameters(parameters)) {
+  if (Error err = m_tild_header.set_parameters(parameters, get_context()->get_security_limits())) {
     return err;
   }
 
@@ -791,7 +795,9 @@ ImageItem_Tiled::add_new_tiled_item(HeifContext* ctx, const heif_tiled_image_par
   // Create header + offset table
 
   TiledHeader tild_header;
-  tild_header.set_parameters(*parameters);
+  if (Error err = tild_header.set_parameters(*parameters)) {
+    return err;
+  }
   tild_header.set_compression_format(encoder->plugin->compression_format);
 
   Result<std::vector<uint8_t>> header_data_result = tild_header.write_offset_table();
@@ -822,7 +828,7 @@ ImageItem_Tiled::add_new_tiled_item(HeifContext* ctx, const heif_tiled_image_par
   m_heif_file->add_property(grid_id, pixi, true);
 #endif
 
-  tild_image->set_tild_header(tild_header);
+  tild_image->set_tild_header(std::move(tild_header));
   tild_image->set_next_tild_position(header_data_result->size());
 
   // Set Brands
