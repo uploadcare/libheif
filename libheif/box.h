@@ -897,9 +897,15 @@ public:
     set_short_type(fourcc("auxC"));
   }
 
-  const std::string& get_aux_type() const { return m_aux_type; }
+  const std::string& get_aux_type() const
+  {
+    static const std::string empty;
+    return m_aux_type ? m_aux_type->value : empty;
+  }
 
-  void set_aux_type(const std::string& type) { m_aux_type = type; }
+  std::shared_ptr<const MemoryTrackedString> get_shared_aux_type() const { return m_aux_type; }
+
+  void set_aux_type(const std::string& type) { m_aux_type = std::make_shared<const MemoryTrackedString>(type); }
 
   const std::vector<uint8_t>& get_subtypes() const { return m_aux_subtypes; }
 
@@ -916,7 +922,7 @@ protected:
 
 private:
   MemoryHandle m_memory_handle;
-  std::string m_aux_type;
+  std::shared_ptr<const MemoryTrackedString> m_aux_type;
   std::vector<uint8_t> m_aux_subtypes;
 };
 
@@ -2028,9 +2034,15 @@ public:
 
   const char* debug_box_name() const override { return "GIMI Content ID"; }
 
-  std::string get_content_id() const { return m_content_id; }
+  const std::string& get_content_id() const
+  {
+    static const std::string empty;
+    return m_content_id ? m_content_id->value : empty;
+  }
 
-  void set_content_id(const std::string& id) { m_content_id = id; }
+  std::shared_ptr<const MemoryTrackedString> get_shared_content_id() const { return m_content_id; }
+
+  void set_content_id(const std::string& id) { m_content_id = std::make_shared<const MemoryTrackedString>(id); }
 
   [[nodiscard]] parse_error_fatality get_parse_error_fatality() const override { return parse_error_fatality::ignorable; }
 
@@ -2040,8 +2052,7 @@ protected:
   Error write(StreamWriter& writer) const override;
 
 private:
-  MemoryHandle m_memory_handle;
-  std::string m_content_id;
+  std::shared_ptr<const MemoryTrackedString> m_content_id;
 };
 
 

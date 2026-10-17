@@ -1869,17 +1869,37 @@ Error Box_iloc::read_data(heif_item_id item_id,
 
   MemoryHandle scoped_memory_handle;
   auto& reservation = memory_handle ? *memory_handle : scoped_memory_handle;
-  auto reserve_payload = [&](uint64_t length) -> Error {
-    if (length > dest->max_size() - dest->size()) {
+  uint64_t remaining_offset = offset;
+  uint64_t remaining_size = size;
+  size_t append_size = 0;
+  for (const auto& extent : item->extents) {
+    const uint64_t skip = std::min(remaining_offset, extent.length);
+    remaining_offset -= skip;
+    const uint64_t length = std::min(extent.length - skip, remaining_size);
+    if (length > dest->max_size() - dest->size() - append_size) {
       return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
               "iloc item data exceeds the maximum buffer size"};
     }
-    if (limits->max_memory_block_size && dest->size() + length > limits->max_memory_block_size) {
+    append_size += static_cast<size_t>(length);
+    remaining_size -= length;
+  }
+  const size_t final_size = dest->size() + append_size;
+  if (append_size > 0) {
+    if (limits->max_memory_block_size && final_size > limits->max_memory_block_size) {
       return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
               "iloc item data exceeds the maximum memory block size"};
     }
-    return reservation.alloc(static_cast<size_t>(length), limits, "iloc item data");
-  };
+    MemoryHandle old_storage;
+    if (final_size > dest->capacity()) {
+      if (auto err = old_storage.alloc(dest->capacity(), limits, "iloc previous buffer during growth")) {
+        return err;
+      }
+    }
+    if (auto err = reservation.alloc(append_size, limits, "iloc item data")) {
+      return err;
+    }
+    dest->reserve(final_size);
+  }
 
 
   // TODO: this function should always append the data to the output vector as this is used when
@@ -1911,9 +1931,6 @@ Error Box_iloc::read_data(heif_item_id item_id,
                 "iloc item data exceeds the maximum memory block size"};
       }
 
-      if (auto err = reserve_payload(read_len)) {
-        return err;
-      }
       dest->insert(dest->end(),
                    extent.data.begin() + static_cast<size_t>(skip_len),
                    extent.data.begin() + static_cast<size_t>(skip_len + read_len));
@@ -2014,9 +2031,6 @@ Error Box_iloc::read_data(heif_item_id item_id,
 
       // --- read data
 
-      if (auto err = reserve_payload(read_len)) {
-        return err;
-      }
       dest->resize(static_cast<size_t>(old_size + read_len));
       success = istr->read((char*) dest->data() + old_size, static_cast<size_t>(read_len));
       if (!success) {
@@ -2054,9 +2068,6 @@ Error Box_iloc::read_data(heif_item_id item_id,
         continue;
       }
 
-      if (auto err = reserve_payload(read_len)) {
-        return err;
-      }
       Error err = idat->read_data(istr,
                                   extent.offset + item->base_offset + skip_len,
                                   read_len,
@@ -3692,9 +3703,11 @@ Error Box_auxC::parse(BitstreamRange& range, const heif_security_limits* limits)
     return unsupported_version_error("auxC");
   }
 
-  if (Error err = range.read_string(m_aux_type, m_memory_handle, limits)) {
+  auto type = std::make_shared<MemoryTrackedString>();
+  if (Error err = range.read_string(type->value, type->memory_handle, limits)) {
     return err;
   }
+  m_aux_type = std::move(type);
 
   const size_t size = range.get_remaining_bytes();
   if (Error err = m_memory_handle.alloc(size, limits, "auxC subtype data")) {
@@ -3713,7 +3726,7 @@ Error Box_auxC::write(StreamWriter& writer) const
 {
   size_t box_start = reserve_box_header_space(writer);
 
-  writer.write(m_aux_type);
+  writer.write(get_aux_type());
 
   for (uint8_t subtype : m_aux_subtypes) {
     writer.write8(subtype);
@@ -3729,7 +3742,7 @@ void Box_auxC::dump(std::ostream& sstr, Indent& indent, bool full_log) const
 {
   Box::dump(sstr, indent, full_log);
 
-  sstr << indent << "aux type: " << m_aux_type << "\n"
+  sstr << indent << "aux type: " << get_aux_type() << "\n"
        << indent << "aux subtypes: ";
   for (uint8_t subtype : m_aux_subtypes) {
     sstr << std::hex << std::setw(2) << std::setfill('0') << ((int) subtype) << " ";
@@ -5675,9 +5688,11 @@ Error Box_elng::write(StreamWriter& writer) const
 
 Error Box_gimi_content_id::parse(BitstreamRange& range, const heif_security_limits* limits)
 {
-  if (Error err = range.read_string_until_eof(m_content_id, m_memory_handle, limits)) {
+  auto id = std::make_shared<MemoryTrackedString>();
+  if (Error err = range.read_string_until_eof(id->value, id->memory_handle, limits)) {
     return err;
   }
+  m_content_id = std::move(id);
 
   return range.get_error();
 }
@@ -5687,7 +5702,7 @@ Error Box_gimi_content_id::write(StreamWriter& writer) const
 {
   size_t box_start = reserve_box_header_space(writer);
 
-  writer.write(m_content_id, false);
+  writer.write(get_content_id(), false);
 
   prepend_header(writer, box_start);
 
@@ -5699,7 +5714,7 @@ void Box_gimi_content_id::dump(std::ostream& sstr, Indent& indent, bool full_log
 {
   Box::dump(sstr, indent, full_log);
 
-  sstr << indent << "content ID: " << m_content_id << "\n";
+  sstr << indent << "content ID: " << get_content_id() << "\n";
 
   return;
 }

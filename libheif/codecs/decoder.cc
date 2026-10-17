@@ -341,6 +341,37 @@ Decoder::~Decoder()
 }
 
 
+Error validate_nal_array_lengths(BitstreamRange& range, int nArrays, const char* box_type)
+{
+  if (range.error()) {
+    return range.get_error();
+  }
+  auto istr = range.get_istream();
+  const auto arrays_start = istr->get_position();
+  BitstreamRange arrays(istr, range.get_remaining_bytes());
+  for (int i = 0; i < nArrays && !arrays.error(); i++) {
+    arrays.read8();
+    const int nUnits = arrays.read16();
+    for (int u = 0; u < nUnits && !arrays.error(); u++) {
+      const int length = arrays.read16();
+      if (arrays.error() || static_cast<size_t>(length) > arrays.get_remaining_bytes()) {
+        return {heif_error_Invalid_input, heif_suberror_End_of_data,
+                std::string("Truncated ") + box_type + " NAL payload"};
+      }
+      arrays.skip(length);
+    }
+  }
+  if (arrays.error()) {
+    return arrays.get_error();
+  }
+  if (!istr->seek(arrays_start)) {
+    return {heif_error_Invalid_input, heif_suberror_End_of_data,
+            std::string("Cannot reread ") + box_type + " NAL arrays"};
+  }
+  return Error::Ok;
+}
+
+
 std::optional<std::pair<const uint8_t*, size_t>>
 next_nal_unit_4byte_length_prefixed(const uint8_t* data, size_t size, size_t& offset)
 {

@@ -126,7 +126,12 @@ Op_bayer_bilinear_to_RGB24_32::convert_colorspace(const std::shared_ptr<const He
   uint8_t* out_p = outimg->get_channel_memory(heif_channel_interleaved, &out_stride);
 
   // Build a lookup table: for each pattern position, which RGB channel (0=R,1=G,2=B) does it provide?
-  std::vector<int> pattern_channel(pw * ph);
+  const size_t pattern_size = size_t{pw} * ph;
+  MemoryHandle scratch_memory;
+  if (auto err = scratch_memory.alloc(pattern_size, sizeof(int), limits, "Bayer pattern channels")) {
+    return err;
+  }
+  std::vector<int> pattern_channel(pattern_size);
   for (int i = 0; i < pw * ph; i++) {
     uint16_t comp_type = input->get_component_type(pattern.pixels->values[i].component_id);
     pattern_channel[i] = component_type_to_rgb_index(comp_type);
@@ -141,35 +146,41 @@ Op_bayer_bilinear_to_RGB24_32::convert_colorspace(const std::shared_ptr<const He
   // neighbor_offsets[py * pw + px][ch] = list of (dx, dy) offsets to average.
   // For the channel this position directly provides: single entry (0, 0).
   // For other channels: all neighbor offsets within the search radius that provide that channel.
-  std::vector<std::array<std::vector<std::pair<int, int>>, 3>> neighbor_offsets(pw * ph);
+  using ChannelOffsets = std::array<std::vector<std::pair<int, int>>, 3>;
+  if (auto err = scratch_memory.alloc(pattern_size, sizeof(ChannelOffsets), limits, "Bayer neighbor tables")) {
+    return err;
+  }
+  std::vector<ChannelOffsets> neighbor_offsets(pattern_size);
 
   for (int py = 0; py < ph; py++) {
     for (int px = 0; px < pw; px++) {
       int this_ch = pattern_channel[py * pw + px];
       auto& offsets = neighbor_offsets[py * pw + px];
 
-      // The channel this position directly provides: just read from (0,0)
-      offsets[this_ch].emplace_back(0, 0);
-
-      // For the other two channels: collect neighbor offsets
-      int search_radius_x = pw - 1;
-      int search_radius_y = ph - 1;
-
-      for (int dy = -search_radius_y; dy <= search_radius_y; dy++) {
-        for (int dx = -search_radius_x; dx <= search_radius_x; dx++) {
-          if (dx == 0 && dy == 0) {
-            continue;
-          }
-
-          int npx = (((px + dx) % pw) + pw) % pw;
-          int npy = (((py + dy) % ph) + ph) % ph;
-          int neighbor_ch = pattern_channel[npy * pw + npx];
-
-          if (neighbor_ch != this_ch) {
-            offsets[neighbor_ch].emplace_back(dx, dy);
+      auto for_each_neighbor = [&](auto&& visit) {
+        visit(this_ch, 0, 0);
+        for (int dy = 1 - ph; dy < ph; dy++) {
+          for (int dx = 1 - pw; dx < pw; dx++) {
+            int npx = (((px + dx) % pw) + pw) % pw;
+            int npy = (((py + dy) % ph) + ph) % ph;
+            int neighbor_ch = pattern_channel[npy * pw + npx];
+            if (neighbor_ch != this_ch) {
+              visit(neighbor_ch, dx, dy);
+            }
           }
         }
+      };
+
+      // Count and fill with the same selection rules, reserving exact capacities first.
+      std::array<size_t, 3> counts{};
+      for_each_neighbor([&](int ch, int, int) { counts[ch]++; });
+      for (int ch = 0; ch < 3; ch++) {
+        if (auto err = scratch_memory.alloc(counts[ch], sizeof(std::pair<int, int>), limits, "Bayer neighbor offsets")) {
+          return err;
+        }
+        offsets[ch].reserve(counts[ch]);
       }
+      for_each_neighbor([&](int ch, int dx, int dy) { offsets[ch].emplace_back(dx, dy); });
     }
   }
 

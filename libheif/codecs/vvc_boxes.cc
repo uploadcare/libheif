@@ -132,6 +132,13 @@ Error Box_vvcC::parse(BitstreamRange& range, const heif_security_limits* limits)
   // read NAL arrays
 
   int nArrays = range.read8();
+  if (auto err = validate_nal_array_lengths(range, nArrays, "vvcC")) {
+    return err;
+  }
+  if (auto err = m_memory_handle.alloc(nArrays, sizeof(NalArray), limits, "vvcC NAL arrays")) {
+    return err;
+  }
+  m_nal_array.reserve(nArrays);
 
   for (int i = 0; i < nArrays && !range.error(); i++) {
     byte = range.read8();
@@ -142,6 +149,10 @@ Error Box_vvcC::parse(BitstreamRange& range, const heif_security_limits* limits)
     array.m_NAL_unit_type = (byte & 0x3F);
 
     int nUnits = range.read16();
+    if (auto err = m_memory_handle.alloc(nUnits, sizeof(std::vector<uint8_t>), limits, "vvcC NAL descriptors")) {
+      return err;
+    }
+    array.m_nal_units.reserve(nUnits);
     for (int u = 0; u < nUnits && !range.error(); u++) {
 
       std::vector<uint8_t> nal_unit;

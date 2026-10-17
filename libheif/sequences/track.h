@@ -68,15 +68,22 @@ private:
 class SampleAuxInfoReader
 {
 public:
-  SampleAuxInfoReader(const std::shared_ptr<Box_saiz>&,
-                      const std::shared_ptr<Box_saio>&,
-                      const std::vector<std::shared_ptr<Chunk>>& chunks);
+  static Result<std::unique_ptr<SampleAuxInfoReader>> create(const std::shared_ptr<Box_saiz>&,
+                                                            const std::shared_ptr<Box_saio>&,
+                                                            const std::vector<std::shared_ptr<Chunk>>& chunks,
+                                                            const heif_security_limits* limits);
 
   heif_sample_aux_info_type get_type() const;
 
   Result<std::vector<uint8_t>> get_sample_info(const HeifFile* file, uint32_t sample_idx);
 
 private:
+  SampleAuxInfoReader() = default;
+  Error init(const std::shared_ptr<Box_saiz>&,
+             const std::shared_ptr<Box_saio>&,
+             const std::vector<std::shared_ptr<Chunk>>& chunks,
+             const heif_security_limits* limits);
+
   std::shared_ptr<Box_saiz> m_saiz;
   std::shared_ptr<Box_saio> m_saio;
 
@@ -86,6 +93,7 @@ private:
   uint64_t m_singleChunk_offset=0;
 
   // For chunked data or non-constant sample sizes, we use a table with the offsets for all SAI samples.
+  MemoryHandle m_memory_handle;
   std::vector<uint64_t> m_sample_offsets;
 };
 

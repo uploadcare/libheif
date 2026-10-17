@@ -26,6 +26,8 @@
 #include <set>
 #include <atomic>
 #include <memory>
+#include <string>
+#include <utility>
 #include "error.h"
 
 
@@ -136,6 +138,8 @@ heif_security_limits tighten_image_size_limit_for_ispe(const heif_security_limit
                                                        uint32_t coding_unit_size);
 
 
+struct memory_stats;
+
 class TotalMemoryTracker
 {
 public:
@@ -149,6 +153,7 @@ public:
 
 private:
   const heif_security_limits* m_limits_context = nullptr;
+  std::shared_ptr<memory_stats> m_stats;
 };
 
 
@@ -179,7 +184,7 @@ public:
   MemoryHandle& operator=(const MemoryHandle&) = delete;
 
   MemoryHandle(MemoryHandle&& other) noexcept
-      : m_limits_context(other.m_limits_context), m_memory_amount(other.m_memory_amount)
+      : m_limits_context(other.m_limits_context), m_memory_amount(other.m_memory_amount), m_stats(std::move(other.m_stats))
   {
     other.m_limits_context = nullptr;
     other.m_memory_amount = 0;
@@ -191,6 +196,7 @@ public:
       free();
       m_limits_context = other.m_limits_context;
       m_memory_amount = other.m_memory_amount;
+      m_stats = std::move(other.m_stats);
       other.m_limits_context = nullptr;
       other.m_memory_amount = 0;
     }
@@ -200,6 +206,18 @@ public:
 private:
   const heif_security_limits* m_limits_context = nullptr;
   size_t m_memory_amount = 0;
+  std::shared_ptr<memory_stats> m_stats;
+};
+
+
+// Publish through shared_ptr<const MemoryTrackedString>; replacement leaves existing snapshots intact.
+struct MemoryTrackedString
+{
+  MemoryHandle memory_handle;
+  std::string value;
+
+  MemoryTrackedString() = default;
+  explicit MemoryTrackedString(std::string text) : value(std::move(text)) {}
 };
 
 

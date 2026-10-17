@@ -856,7 +856,7 @@ Error HeifContext::interpret_heif_file_images()
     // --- assign GIMI content-ID to image
 
     if (auto box_gimi_content_id = image->get_property<Box_gimi_content_id>()) {
-      image->set_gimi_sample_content_id(box_gimi_content_id->get_content_id());
+      image->set_gimi_sample_content_id(box_gimi_content_id->get_shared_content_id());
     }
 
     // add image projection information
@@ -1005,7 +1005,7 @@ Error HeifContext::interpret_heif_file_images()
 
           // --- generic aux image
 
-          image->set_is_aux_image(auxC_property->get_aux_type());
+          image->set_is_aux_image(auxC_property->get_shared_aux_type());
 
           for (heif_item_id ref: refs) {
             auto master_iter = m_all_images.find(ref);

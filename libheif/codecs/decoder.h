@@ -59,6 +59,10 @@ std::optional<std::pair<const uint8_t*, size_t>>
 next_nal_unit_4byte_length_prefixed(const uint8_t* data, size_t size, size_t& offset);
 
 
+// Validate HEVC/VVC configuration array lengths without consuming the parent range.
+Error validate_nal_array_lengths(BitstreamRange& range, int nArrays, const char* box_type);
+
+
 // Specifies the input data for decoding.
 // For images, this points to the iloc extents.
 // For sequences, this points to the track data.

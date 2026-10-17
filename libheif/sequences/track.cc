@@ -117,9 +117,24 @@ void SampleAuxInfoHelper::write_all(const std::shared_ptr<Box>& parent, const st
 }
 
 
-SampleAuxInfoReader::SampleAuxInfoReader(const std::shared_ptr<Box_saiz>& saiz,
-                                         const std::shared_ptr<Box_saio>& saio,
-                                         const std::vector<std::shared_ptr<Chunk>>& chunks)
+Result<std::unique_ptr<SampleAuxInfoReader>>
+SampleAuxInfoReader::create(const std::shared_ptr<Box_saiz>& saiz,
+                            const std::shared_ptr<Box_saio>& saio,
+                            const std::vector<std::shared_ptr<Chunk>>& chunks,
+                            const heif_security_limits* limits)
+{
+  auto reader = std::unique_ptr<SampleAuxInfoReader>(new SampleAuxInfoReader);
+  if (auto err = reader->init(saiz, saio, chunks, limits)) {
+    return err;
+  }
+  return reader;
+}
+
+
+Error SampleAuxInfoReader::init(const std::shared_ptr<Box_saiz>& saiz,
+                                const std::shared_ptr<Box_saio>& saio,
+                                const std::vector<std::shared_ptr<Chunk>>& chunks,
+                                const heif_security_limits* limits)
 {
   m_saiz = saiz;
   m_saio = saio;
@@ -136,6 +151,9 @@ SampleAuxInfoReader::SampleAuxInfoReader(const std::shared_ptr<Box_saiz>& saiz,
     m_singleChunk_offset = offset;
   }
   else {
+    if (auto err = m_memory_handle.alloc(nSamples, sizeof(uint64_t), limits, "sample auxiliary offsets")) {
+      return err;
+    }
     m_sample_offsets.resize(nSamples);
 
     for (uint32_t i = 0; i < nSamples; i++) {
@@ -151,6 +169,7 @@ SampleAuxInfoReader::SampleAuxInfoReader(const std::shared_ptr<Box_saiz>& saiz,
       offset += saiz->get_sample_size(i);
     }
   }
+  return Error::Ok;
 }
 
 
@@ -515,11 +534,19 @@ Error Track::load(const std::shared_ptr<Box_trak>& trak_box)
       }
 
       if (aux_info_type == fourcc("suid")) {
-        m_aux_reader_content_ids = std::make_unique<SampleAuxInfoReader>(saiz, saio, m_chunks);
+        auto reader = SampleAuxInfoReader::create(saiz, saio, m_chunks, limits);
+        if (!reader) {
+          return reader.error();
+        }
+        m_aux_reader_content_ids = std::move(*reader);
       }
 
       if (aux_info_type == fourcc("stai")) {
-        m_aux_reader_tai_timestamps = std::make_unique<SampleAuxInfoReader>(saiz, saio, m_chunks);
+        auto reader = SampleAuxInfoReader::create(saiz, saio, m_chunks, limits);
+        if (!reader) {
+          return reader.error();
+        }
+        m_aux_reader_tai_timestamps = std::move(*reader);
       }
     }
     else {
