@@ -47,7 +47,8 @@ public:
   Result<std::vector<uint8_t>> read_bitstream_configuration_data(MemoryHandle* memory_handle = nullptr,
                                                                 const heif_security_limits* limits = nullptr) const override;
 
-  Result<std::optional<ImageSize>> get_max_coded_image_size(const std::vector<uint8_t>& compressed_data) const override;
+  Result<std::optional<ImageSize>> get_max_coded_image_size(const std::vector<uint8_t>& compressed_data,
+                                                          const heif_security_limits* limits = nullptr) const override;
 
 private:
   const std::shared_ptr<const Box_avcC> m_avcC;

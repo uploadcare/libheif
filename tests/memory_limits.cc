@@ -1869,6 +1869,147 @@ TEST_CASE("unci scattered raw tile reads check the complete tile before copying"
 }
 #endif
 
+TEST_CASE("codec header scratch obeys limits while compressed input remains retained")
+{
+  const std::string codec = GENERATE("AVC", "HEVC", "VVC");
+  INFO(codec);
+  std::unique_ptr<Decoder> decoder;
+  std::vector<uint8_t> sps;
+  if (codec == "AVC") {
+    decoder = std::make_unique<Decoder_AVC>(std::make_shared<Box_avcC>());
+    sps = {0x67, 0x4d, 0x40, 0x0b, 0xec, 0xc1, 0x42, 0xbc,
+           0xd3, 0x42, 0x00, 0x00, 0x03, 0x00, 0x32, 0x00,
+           0x00, 0x03, 0x00, 0x04, 0x1e, 0x28, 0x53, 0x34};
+  }
+  else if (codec == "HEVC") {
+    decoder = std::make_unique<Decoder_HEVC>(std::make_shared<Box_hvcC>());
+    sps = {0x42, 0x01, 0x01, 0x03, 0x70, 0x00, 0x00, 0x03, 0x00, 0x90, 0x00, 0x00,
+           0x03, 0x00, 0x00, 0x03, 0x00, 0x3f, 0xa0, 0x0e, 0x48, 0x07, 0x47, 0x75,
+           0x96, 0xea, 0x49, 0x29, 0xae, 0x6e, 0x02, 0x1a, 0x0c, 0x08, 0x00, 0x00,
+           0x03, 0x00, 0xc8, 0x00, 0x00, 0x03, 0x00, 0x08, 0x40};
+  }
+  else {
+    decoder = std::make_unique<Decoder_VVC>(std::make_shared<Box_vvcC>());
+    sps = {0x00, 0x79, 0x00, 0x08, 0x12, 0x20};
+  }
+  sps.resize(4096, 0xAA);
+  StreamWriter writer;
+  for (int i = 0; i < 2; i++) {
+    writer.write32(static_cast<uint32_t>(sps.size()));
+    writer.write(sps);
+  }
+  const auto data = writer.get_data();
+  heif_security_limits limits = *heif_get_global_security_limits();
+  TotalMemoryTracker tracker(&limits);
+  auto file = std::make_shared<HeifFile>();
+  file->set_security_limits(&limits);
+  DataExtent extent;
+  extent.m_file = file;
+  REQUIRE(extent.m_raw_memory_handle.alloc(data.size(), &limits, "retained compressed input") == Error::Ok);
+  extent.m_raw = data;
+  decoder->set_data_extent(std::move(extent));
+  limits.max_memory_block_size = sps.size();
+  limits.max_total_memory = data.size() + sps.size();
+
+  SECTION("each header fits exact budgets and releases scratch before the next header") {
+    auto result = decoder->get_max_coded_image_size(data);
+    REQUIRE(result);
+    REQUIRE(result->has_value());
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(sps.size(), &limits, "released header scratch") == Error::Ok);
+  }
+
+  SECTION("the scratch buffer must fit the block limit") {
+    limits.max_memory_block_size--;
+    limits.max_total_memory = 0;
+    auto result = decoder->get_max_coded_image_size(data);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+
+  SECTION("input and scratch must fit the total budget concurrently") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory--;
+    auto result = decoder->get_max_coded_image_size(data);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(sps.size() - 1, &limits, "failed header scratch") == Error::Ok);
+  }
+
+  SECTION("explicit decode limits override the file limits") {
+    heif_security_limits decode_limits = limits;
+    decode_limits.parent = &limits;
+    if (GENERATE(false, true)) {
+      decode_limits.max_memory_block_size = sps.size() - 1;
+    }
+    else {
+      decode_limits.max_total_memory--;
+    }
+    auto result = decoder->get_max_coded_image_size(data, &decode_limits);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+
+  SECTION("disabled memory limits allow header inspection") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = 0;
+    auto result = decoder->get_max_coded_image_size(data);
+    REQUIRE(result);
+    REQUIRE(result->has_value());
+  }
+}
+
+TEST_CASE("unescaped header storage preserves bytes within its reserved budget")
+{
+  const std::vector<uint8_t> input{0, 0, 3, 1, 0, 0, 3, 2, 0, 0, 3};
+  const std::vector<uint8_t> expected{0, 0, 1, 0, 0, 2, 0, 0};
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = input.size();
+  limits.max_total_memory = input.size();
+  TotalMemoryTracker tracker(&limits);
+
+  SECTION("exact budgets cover reserved capacity until the owner is destroyed") {
+    {
+      MemoryHandle owner;
+      auto result = remove_start_code_emulation(input.data(), input.size(), owner, &limits);
+      REQUIRE(result);
+      REQUIRE(*result == expected);
+      MemoryHandle probe;
+      REQUIRE(probe.alloc(1, &limits, "retained unescaped header") != Error::Ok);
+    }
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(input.size(), &limits, "released unescaped header") == Error::Ok);
+  }
+
+  SECTION("block failures do not consume the total budget") {
+    limits.max_memory_block_size--;
+    MemoryHandle owner;
+    auto result = remove_start_code_emulation(input.data(), input.size(), owner, &limits);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().sub_error_code == heif_suberror_Security_limit_exceeded);
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(limits.max_memory_block_size, &limits, "failed header allocation") == Error::Ok);
+  }
+
+  SECTION("empty headers require no allocation") {
+    MemoryHandle owner;
+    auto result = remove_start_code_emulation(nullptr, 0, owner, &limits);
+    REQUIRE(result);
+    REQUIRE(result->empty());
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(input.size(), &limits, "empty header") == Error::Ok);
+  }
+
+  SECTION("incomplete escape prefixes are preserved") {
+    const std::vector<uint8_t> prefix = GENERATE(std::vector<uint8_t>{0}, std::vector<uint8_t>{0, 0});
+    MemoryHandle owner;
+    auto result = remove_start_code_emulation(prefix.data(), prefix.size(), owner, &limits);
+    REQUIRE(result);
+    REQUIRE(*result == prefix);
+  }
+}
+
 TEST_CASE("metadata reservations survive decompression and transfer to their owner")
 {
   const auto compression = GENERATE(heif_metadata_compression_off,

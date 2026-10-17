@@ -386,14 +386,19 @@ static bool skip_scaling_list(BitReader& reader, int sizeOfScalingList)
 Error parse_sps_for_avcC_configuration(const uint8_t* sps, size_t size,
                                        Box_avcC::configuration* config,
                                        uint32_t* width, uint32_t* height,
-                                       ImageSize* coded_size)
+                                       ImageSize* coded_size,
+                                       const heif_security_limits* limits)
 {
   // remove start-code emulation bytes from SPS header stream
 
-  std::vector<uint8_t> sps_no_emul = remove_start_code_emulation(sps, size);
+  MemoryHandle memory_handle;
+  auto sps_no_emul = remove_start_code_emulation(sps, size, memory_handle, limits);
+  if (!sps_no_emul) {
+    return sps_no_emul.error();
+  }
 
-  sps = sps_no_emul.data();
-  size = sps_no_emul.size();
+  sps = sps_no_emul->data();
+  size = sps_no_emul->size();
 
 
   BitReader reader(sps, size);

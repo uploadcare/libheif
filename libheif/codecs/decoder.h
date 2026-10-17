@@ -137,9 +137,10 @@ public:
   //
   // Returns nullopt when the codec exposes no coded size in this buffer (e.g. no
   // SPS/sequence-header/SOF present, as in a non-sync sequence frame).
-  // Returns Error only on a structurally invalid header.
+  // Returns Error on a structurally invalid header or an allocation limit failure.
   [[nodiscard]] virtual Result<std::optional<ImageSize>>
-  get_max_coded_image_size(const std::vector<uint8_t>& /*compressed_data*/) const
+  get_max_coded_image_size(const std::vector<uint8_t>& /*compressed_data*/,
+                           const heif_security_limits* /*limits*/ = nullptr) const
   {
     return std::optional<ImageSize>{};
   }

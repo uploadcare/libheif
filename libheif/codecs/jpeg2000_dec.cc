@@ -33,7 +33,8 @@ Result<std::vector<uint8_t>> Decoder_JPEG2000::read_bitstream_configuration_data
 }
 
 
-Result<std::optional<ImageSize>> Decoder_JPEG2000::get_max_coded_image_size(const std::vector<uint8_t>& compressed_data) const
+Result<std::optional<ImageSize>> Decoder_JPEG2000::get_max_coded_image_size(const std::vector<uint8_t>& compressed_data,
+                                                                         const heif_security_limits*) const
 {
   // The JPEG 2000 coded size is the reference grid (Xsiz, Ysiz) declared in the
   // SIZ marker of the codestream, which lives in the item data. A decoder performs

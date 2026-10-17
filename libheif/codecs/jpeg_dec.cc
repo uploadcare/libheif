@@ -159,7 +159,8 @@ int Decoder_JPEG::get_chroma_bits_per_pixel() const
 }
 
 
-Result<std::optional<ImageSize>> Decoder_JPEG::get_max_coded_image_size(const std::vector<uint8_t>& compressed_data) const
+Result<std::optional<ImageSize>> Decoder_JPEG::get_max_coded_image_size(const std::vector<uint8_t>& compressed_data,
+                                                                      const heif_security_limits*) const
 {
   // The JPEG coded size lives in the SOF marker inside the bitstream (there is no
   // separate configuration record that carries it). `compressed_data` is the

@@ -45,7 +45,8 @@ Result<std::vector<uint8_t>> Decoder_AVIF::read_bitstream_configuration_data(Mem
 }
 
 
-Result<std::optional<ImageSize>> Decoder_AVIF::get_max_coded_image_size(const std::vector<uint8_t>& compressed_data) const
+Result<std::optional<ImageSize>> Decoder_AVIF::get_max_coded_image_size(const std::vector<uint8_t>& compressed_data,
+                                                                      const heif_security_limits*) const
 {
   // The AV1 sequence header carries the coded frame size
   // (max_frame_width_minus_1 / max_frame_height_minus_1). Per the AVIF

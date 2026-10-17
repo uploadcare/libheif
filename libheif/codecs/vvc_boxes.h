@@ -130,6 +130,7 @@ struct ImageSize;
 Error parse_sps_for_vvcC_configuration(const uint8_t* sps, size_t size,
                                        Box_vvcC::configuration* inout_config,
                                        uint32_t* width, uint32_t* height,
-                                       ImageSize* coded_size = nullptr);
+                                       ImageSize* coded_size = nullptr,
+                                       const heif_security_limits* limits = nullptr);
 
 #endif // LIBHEIF_VVC_BOXES_H
