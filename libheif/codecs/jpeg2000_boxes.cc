@@ -51,6 +51,9 @@ Error Box_cdef::parse(BitstreamRange& range, const heif_security_limits* limits)
             sstr.str()};
   }
 
+  if (Error err = m_memory_handle.alloc(channel_count, sizeof(Channel), limits, "cdef channel table")) {
+    return err;
+  }
   m_channels.resize(channel_count);
 
   for (uint16_t i = 0; i < channel_count && !range.error() && !range.eof(); i++) {
@@ -324,6 +327,9 @@ Error Box_j2kL::parse(BitstreamRange& range, const heif_security_limits* limits)
             sstr.str()};
   }
 
+  if (Error err = m_memory_handle.alloc(layer_count, sizeof(Layer), limits, "j2kL layer table")) {
+    return err;
+  }
   m_layers.resize(layer_count);
 
   for (int i = 0; i < layer_count && !range.error() && !range.eof(); i++) {

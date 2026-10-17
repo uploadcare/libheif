@@ -113,6 +113,7 @@ protected:
     Error parse(BitstreamRange &range, const heif_security_limits* limits) override;
 
 private:
+    MemoryHandle m_memory_handle;
     std::vector<Channel> m_channels;
 };
 
@@ -311,6 +312,7 @@ protected:
     Error parse(BitstreamRange &range, const heif_security_limits* limits) override;
 
 private:
+    MemoryHandle m_memory_handle;
     std::vector<Layer> m_layers;
 };
 

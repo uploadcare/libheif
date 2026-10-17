@@ -3370,8 +3370,18 @@ Error Box_ipma::parse(BitstreamRange& range, const heif_security_limits* limits)
             sstr.str()};
   }
 
-  for (uint32_t i = 0; i < entry_cnt && !range.error() && !range.eof(); i++) {
-    Entry entry;
+  const size_t item_id_bytes = get_version() < 1 ? 2 : 4;
+  if (entry_cnt > range.get_remaining_bytes() / (item_id_bytes + 1)) {
+    return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete ipma entry table"};
+  }
+  if (Error err = m_memory_handle.alloc(entry_cnt, sizeof(Entry), limits, "ipma entry table")) {
+    return err;
+  }
+  m_entries.reserve(entry_cnt);
+
+  for (uint32_t i = 0; i < entry_cnt; i++) {
+    m_entries.emplace_back();
+    Entry& entry = m_entries.back();
     if (get_version() < 1) {
       entry.item_ID = range.read16();
     }
@@ -3380,6 +3390,14 @@ Error Box_ipma::parse(BitstreamRange& range, const heif_security_limits* limits)
     }
 
     int assoc_cnt = range.read8();
+    const size_t association_bytes = (get_flags() & 1) ? 2 : 1;
+    if (range.error() || static_cast<size_t>(assoc_cnt) > range.get_remaining_bytes() / association_bytes) {
+      return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete ipma association table"};
+    }
+    if (Error err = m_memory_handle.alloc(assoc_cnt, sizeof(PropertyAssociation), limits, "ipma association table")) {
+      return err;
+    }
+    entry.associations.reserve(assoc_cnt);
     for (int k = 0; k < assoc_cnt; k++) {
       PropertyAssociation association{};
 
@@ -3398,7 +3416,6 @@ Error Box_ipma::parse(BitstreamRange& range, const heif_security_limits* limits)
       entry.associations.push_back(association);
     }
 
-    m_entries.push_back(entry);
   }
 
   return range.get_error();
@@ -3584,11 +3601,51 @@ Error Box_ipma::write(StreamWriter& writer) const
 }
 
 
-void Box_ipma::insert_entries_from_other_ipma_box(const Box_ipma& b)
+Error Box_ipma::insert_entries_from_other_ipma_boxes(const std::vector<std::shared_ptr<Box_ipma>>& boxes,
+                                                    const heif_security_limits* limits)
 {
-  m_entries.insert(m_entries.end(),
-                   b.m_entries.begin(),
-                   b.m_entries.end());
+  size_t entry_count = 0;
+  for (const auto& box : boxes) {
+    if (box.get() == this) {
+      continue;
+    }
+    if (box->m_entries.size() > m_entries.max_size() - m_entries.size() - entry_count) {
+      return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+              "Merged ipma entry table exceeds maximum vector size"};
+    }
+    entry_count += box->m_entries.size();
+  }
+  if (limits) {
+    if (limits->max_memory_block_size &&
+        m_entries.size() + entry_count > limits->max_memory_block_size / sizeof(Entry)) {
+      return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+              "Merged ipma entry table exceeds maximum memory block size"};
+    }
+    if (Error err = m_memory_handle.alloc(entry_count, sizeof(Entry), limits, "merged ipma entry table")) {
+      return err;
+    }
+    size_t reserved = entry_count * sizeof(Entry);
+    for (const auto& box : boxes) {
+      if (box.get() == this) {
+        continue;
+      }
+      for (const auto& entry : box->m_entries) {
+        if (Error err = m_memory_handle.alloc(entry.associations.size(), sizeof(PropertyAssociation), limits,
+                                              "merged ipma associations")) {
+          m_memory_handle.free(reserved);
+          return err;
+        }
+        reserved += entry.associations.size() * sizeof(PropertyAssociation);
+      }
+    }
+    m_entries.reserve(m_entries.size() + entry_count);
+  }
+  for (const auto& box : boxes) {
+    if (box.get() != this) {
+      m_entries.insert(m_entries.end(), box->m_entries.begin(), box->m_entries.end());
+    }
+  }
+  return Error::Ok;
 }
 
 

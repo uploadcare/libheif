@@ -1031,6 +1031,12 @@ Error Box_cpat::parse(BitstreamRange& range, const heif_security_limits* limits)
   }
 
   size_t num_pixels = size_t{m_pattern.pattern_width} * m_pattern.pattern_height;
+  if (num_pixels > range.get_remaining_bytes() / 8) {
+    return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete cpat pixel table"};
+  }
+  if (Error err = m_memory_handle.alloc(num_pixels, sizeof(BayerPatternPixelCmpd), limits, "cpat pixel table")) {
+    return err;
+  }
   m_pattern.pixels.resize(num_pixels);
 
   for (size_t i = 0; i < num_pixels; i++) {
@@ -1097,6 +1103,12 @@ Error Box_splz::parse(BitstreamRange& range, const heif_security_limits* limits)
             "Number of components in splz box exceeds the security limits."};
   }
 
+  if (component_count > range.get_remaining_bytes() / 4) {
+    return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete splz component table"};
+  }
+  if (Error err = m_memory_handle.alloc(component_count, sizeof(uint32_t), limits, "splz component table")) {
+    return err;
+  }
   m_pattern.component_ids.resize(component_count);
   for (uint32_t i = 0; i < component_count; i++) {
     m_pattern.component_ids[i] = range.read32();
@@ -1119,6 +1131,12 @@ Error Box_splz::parse(BitstreamRange& range, const heif_security_limits* limits)
   }
 
   size_t num_pixels = size_t{m_pattern.pattern_width} * m_pattern.pattern_height;
+  if (num_pixels > range.get_remaining_bytes() / 4) {
+    return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete splz angle table"};
+  }
+  if (Error err = m_memory_handle.alloc(num_pixels, sizeof(float), limits, "splz angle table")) {
+    return err;
+  }
   m_pattern.polarization_angles.resize(num_pixels);
 
   for (size_t i = 0; i < num_pixels; i++) {
@@ -1202,6 +1220,12 @@ Error Box_sbpm::parse(BitstreamRange& range, const heif_security_limits* limits)
             "sbpm component_count exceeds security limit."};
   }
 
+  if (component_count > range.get_remaining_bytes() / 4) {
+    return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete sbpm component table"};
+  }
+  if (Error err = m_memory_handle.alloc(component_count, sizeof(uint32_t), limits, "sbpm component table")) {
+    return err;
+  }
   m_map.component_ids.resize(component_count);
   for (uint32_t i = 0; i < component_count; i++) {
     m_map.component_ids[i] = range.read32();
@@ -1222,6 +1246,19 @@ Error Box_sbpm::parse(BitstreamRange& range, const heif_security_limits* limits)
             "sbpm total bad pixel entries exceed security limit."};
   }
 
+  const uint64_t table_bytes = uint64_t{num_bad_rows} * 4 + uint64_t{num_bad_cols} * 4 + uint64_t{num_bad_pixels} * 8;
+  if (table_bytes > range.get_remaining_bytes()) {
+    return {heif_error_Invalid_input, heif_suberror_End_of_data, "Incomplete sbpm bad pixel tables"};
+  }
+  if (Error err = m_memory_handle.alloc(num_bad_rows, sizeof(uint32_t), limits, "sbpm bad rows")) {
+    return err;
+  }
+  if (Error err = m_memory_handle.alloc(num_bad_cols, sizeof(uint32_t), limits, "sbpm bad columns")) {
+    return err;
+  }
+  if (Error err = m_memory_handle.alloc(num_bad_pixels, sizeof(SensorBadPixelsMap::BadPixelCoordinate), limits, "sbpm bad pixels")) {
+    return err;
+  }
   m_map.bad_rows.resize(num_bad_rows);
   for (uint32_t i = 0; i < num_bad_rows; i++) {
     m_map.bad_rows[i] = range.read32();

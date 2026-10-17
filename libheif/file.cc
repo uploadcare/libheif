@@ -610,8 +610,10 @@ Error HeifFile::parse_heif_images()
       return Error(heif_error_Invalid_input,
                    heif_suberror_No_ipma_box);
     }
-    for (size_t i=1;i<ipma_boxes.size();i++) {
-      ipma_boxes[0]->insert_entries_from_other_ipma_box(*ipma_boxes[i]);
+    if (ipma_boxes.size() > 1) {
+      if (Error err = ipma_boxes[0]->insert_entries_from_other_ipma_boxes(ipma_boxes, m_limits)) {
+        return err;
+      }
     }
     m_ipma_box = ipma_boxes[0];
   }

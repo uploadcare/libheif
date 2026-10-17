@@ -867,7 +867,8 @@ public:
 
   Error write(StreamWriter& writer) const override;
 
-  void insert_entries_from_other_ipma_box(const Box_ipma& b);
+  Error insert_entries_from_other_ipma_boxes(const std::vector<std::shared_ptr<Box_ipma>>& boxes,
+                                            const heif_security_limits* limits = nullptr);
 
   // sorts properties such that descriptive properties precede the transformative properties
   void sort_properties(const std::shared_ptr<Box_ipco>&);
@@ -881,6 +882,7 @@ protected:
     std::vector<PropertyAssociation> associations;
   };
 
+  MemoryHandle m_memory_handle;
   std::vector<Entry> m_entries;
 };
 
