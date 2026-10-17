@@ -275,22 +275,24 @@ TEST_CASE( "Bayer pattern shares component id for same cmpd" )
   BayerPattern pattern;
   pattern.pattern_width = 2;
   pattern.pattern_height = 2;
-  pattern.pixels = {
+  auto pixels = std::make_shared<SensorMetadataArray<heif_bayer_pattern_pixel>>();
+  pixels->values = {
     { r_id, 1.0f },
     { g_id, 1.0f },
     { g_id, 1.0f },   // <-- same id as the previous G position
     { b_id, 1.0f },
   };
+  pattern.pixels = std::move(pixels);
   image.set_bayer_pattern(pattern);
 
   REQUIRE(image.has_any_bayer_pattern());
   const auto& stored = image.get_any_bayer_pattern();
-  REQUIRE(stored.pixels.size() == 4);
-  REQUIRE(stored.pixels[0].component_id == r_id);
-  REQUIRE(stored.pixels[1].component_id == g_id);
-  REQUIRE(stored.pixels[2].component_id == g_id);   // shared
-  REQUIRE(stored.pixels[3].component_id == b_id);
-  REQUIRE(stored.pixels[1].component_id == stored.pixels[2].component_id);
+  REQUIRE(stored.pixels->values.size() == 4);
+  REQUIRE(stored.pixels->values[0].component_id == r_id);
+  REQUIRE(stored.pixels->values[1].component_id == g_id);
+  REQUIRE(stored.pixels->values[2].component_id == g_id);   // shared
+  REQUIRE(stored.pixels->values[3].component_id == b_id);
+  REQUIRE(stored.pixels->values[1].component_id == stored.pixels->values[2].component_id);
 
   // The reference components should have has_data_plane=false on their
   // descriptions and not appear as image planes.

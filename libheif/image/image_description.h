@@ -38,6 +38,18 @@
 #include <utility>
 
 
+template <typename T>
+struct SensorMetadataArray
+{
+  SensorMetadataArray() = default;
+  explicit SensorMetadataArray(std::vector<T> v) : values(std::move(v)) {}
+
+  // Shared owners retain the reservation until after the array is destroyed.
+  MemoryHandle memory_handle;
+  std::vector<T> values;
+};
+
+
 // === === Bayer pattern
 
 // --- Bayer pattern expressed as ISO 23001-17 cmpd component indices
@@ -52,7 +64,8 @@ struct BayerPatternCmpd
 {
   uint16_t pattern_width = 0;
   uint16_t pattern_height = 0;
-  std::vector<BayerPatternPixelCmpd> pixels;
+  std::shared_ptr<const SensorMetadataArray<BayerPatternPixelCmpd>> pixels =
+      std::make_shared<SensorMetadataArray<BayerPatternPixelCmpd>>();
 };
 
 // --- Bayer pattern expressed as libheif components IDs
@@ -61,7 +74,8 @@ struct BayerPattern
 {
   uint16_t pattern_width = 0;
   uint16_t pattern_height = 0;
-  std::vector<heif_bayer_pattern_pixel> pixels;
+  std::shared_ptr<const SensorMetadataArray<heif_bayer_pattern_pixel>> pixels =
+      std::make_shared<SensorMetadataArray<heif_bayer_pattern_pixel>>();
 
   [[nodiscard]] BayerPatternCmpd resolve_to_cmpd(std::map<uint32_t, uint32_t> comp_id_to_cmpd) const;
 };
@@ -71,11 +85,15 @@ struct BayerPattern
 
 struct PolarizationPattern
 {
-  std::vector<uint32_t> component_ids;  // empty = applies to all components. Either cmpd-index or component-id, depending on context.
+  // empty = applies to all components. Either cmpd-index or component-id, depending on context.
+  std::shared_ptr<const SensorMetadataArray<uint32_t>> component_ids =
+      std::make_shared<SensorMetadataArray<uint32_t>>();
   uint16_t pattern_width = 0;
   uint16_t pattern_height = 0;
-  std::vector<float> polarization_angles;   // pattern_width * pattern_height entries
-                                            // 0xFFFFFFFF bit-pattern (NaN) = no polarization filter
+  // pattern_width * pattern_height entries
+  // 0xFFFFFFFF bit-pattern (NaN) = no polarization filter
+  std::shared_ptr<const SensorMetadataArray<float>> polarization_angles =
+      std::make_shared<SensorMetadataArray<float>>();
 };
 
 
@@ -88,11 +106,16 @@ struct SensorBadPixelsMap
     uint32_t row, column;
   };
 
-  std::vector<uint32_t> component_ids;  // empty = applies to all components. Either cmpd-index or component-id, depending on context.
+  // empty = applies to all components. Either cmpd-index or component-id, depending on context.
+  std::shared_ptr<const SensorMetadataArray<uint32_t>> component_ids =
+      std::make_shared<SensorMetadataArray<uint32_t>>();
   bool correction_applied = false;
-  std::vector<uint32_t> bad_rows;
-  std::vector<uint32_t> bad_columns;
-  std::vector<BadPixelCoordinate> bad_pixels;
+  std::shared_ptr<const SensorMetadataArray<uint32_t>> bad_rows =
+      std::make_shared<SensorMetadataArray<uint32_t>>();
+  std::shared_ptr<const SensorMetadataArray<uint32_t>> bad_columns =
+      std::make_shared<SensorMetadataArray<uint32_t>>();
+  std::shared_ptr<const SensorMetadataArray<BadPixelCoordinate>> bad_pixels =
+      std::make_shared<SensorMetadataArray<BadPixelCoordinate>>();
 };
 
 
@@ -108,7 +131,9 @@ struct SensorNonUniformityCorrection
     std::vector<float> nuc_offsets;  // image_width * image_height entries
   };
 
-  std::vector<uint32_t> component_ids;  // empty = applies to all components. Either cmpd-index or component-id, depending on context.
+  // empty = applies to all components. Either cmpd-index or component-id, depending on context.
+  std::shared_ptr<const SensorMetadataArray<uint32_t>> component_ids =
+      std::make_shared<SensorMetadataArray<uint32_t>>();
   bool nuc_is_applied = false;
   uint32_t image_width = 0;
   uint32_t image_height = 0;
@@ -126,7 +151,9 @@ std::vector<uint32_t> map_component_ids_to_cmpd(const std::vector<uint32_t>& com
 // Map a list of unci component indices to libheif components.
 // Use to find the libheif components for a metadata box that assigns it through cmpd indices.
 // The output does not contain duplicates and is in no particular order.
-std::vector<uint32_t> map_cmpd_to_component_ids(const std::vector<uint32_t>& cmpd_indices, const std::vector<std::vector<uint32_t>>& cmpd_to_comp_ids);
+Result<std::shared_ptr<const SensorMetadataArray<uint32_t>>> map_cmpd_to_component_ids(const std::vector<uint32_t>& cmpd_indices,
+                                                                                     const std::vector<std::vector<uint32_t>>& cmpd_to_comp_ids,
+                                                                                     const heif_security_limits* limits);
 
 // Find the closest matching heif_channel for an ISO 23001-17 component type.
 // Returns heif_channel_unknown if no good mapping exists.
