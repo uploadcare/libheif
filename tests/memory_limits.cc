@@ -52,6 +52,7 @@
 #include "mini.h"
 #include "file.h"
 #include "nclx.h"
+#include "plugin_registry.h"
 #include "security_limits.h"
 #include "sequences/seq_boxes.h"
 #include "text.h"
@@ -2213,6 +2214,141 @@ TEST_CASE("unci scattered raw tile reads check the complete tile before copying"
   REQUIRE(data == extent.m_raw);
 }
 #endif
+
+TEST_CASE("decoder wrapper input respects block and shared total budgets")
+{
+  std::vector<const heif_decoder_plugin*> plugins;
+  for (const auto* plugin : get_decoder_plugins()) {
+    const std::string name = plugin->id_name;
+    if (name == "jpeg" || name == "openjpeg" || name == "openh264" || name == "ffmpeg") {
+      plugins.push_back(plugin);
+    }
+  }
+  if (plugins.empty()) {
+    SKIP("No buffered decoder wrapper is enabled");
+  }
+  const auto* plugin = GENERATE_COPY(Catch::Generators::from_range(plugins));
+  const std::string name = plugin->id_name;
+  INFO(name);
+  const bool queued = name == "openh264" || name == "ffmpeg";
+  std::vector<uint8_t> payload(32, 0xAA);
+  payload[0] = payload[1] = payload[2] = 0;
+  payload[3] = 28;
+  // FFmpeg replaces the four-byte length with a three-byte start code and
+  // appends its required 64-byte input padding.
+  const size_t allocation_bytes = name == "ffmpeg" ? payload.size() - 1 + 64 : payload.size();
+  heif_security_limits limits = *heif_get_global_security_limits();
+  limits.max_memory_block_size = allocation_bytes;
+  limits.max_total_memory = allocation_bytes;
+  TotalMemoryTracker tracker(&limits);
+  heif_decoder_plugin_options options{};
+  options.format = queued ? heif_compression_AVC :
+                   name == "jpeg" ? heif_compression_JPEG : heif_compression_JPEG2000;
+  options.limits = &limits;
+  void* raw = nullptr;
+  REQUIRE(plugin->new_decoder2(&raw, &options).code == heif_error_Ok);
+  std::unique_ptr<void, void (*)(void*)> decoder(raw, plugin->free_decoder);
+  REQUIRE(decoder);
+
+  SECTION("an exact budget accepts input and retains its reservation") {
+    REQUIRE(plugin->push_data2(raw, payload.data(), payload.size(), 7).code == heif_error_Ok);
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(1, &limits, "retained wrapper input").sub_error_code == heif_suberror_Security_limit_exceeded);
+  }
+
+  SECTION("the complete input allocation must fit the block limit") {
+    limits.max_memory_block_size--;
+    limits.max_total_memory = 0;
+    auto err = plugin->push_data2(raw, payload.data(), payload.size(), 7);
+    REQUIRE(err.code == heif_error_Memory_allocation_error);
+    REQUIRE(err.subcode == heif_suberror_Security_limit_exceeded);
+  }
+
+  SECTION("input must fit the total limit independently of the block limit") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory--;
+    auto err = plugin->push_data2(raw, payload.data(), payload.size(), 7);
+    REQUIRE(err.code == heif_error_Memory_allocation_error);
+    REQUIRE(err.subcode == heif_suberror_Security_limit_exceeded);
+    MemoryHandle probe;
+    REQUIRE(probe.alloc(limits.max_total_memory, &limits, "rejected wrapper input") == Error::Ok);
+  }
+
+  SECTION("separate decoder instances share the context budget") {
+    REQUIRE(plugin->push_data2(raw, payload.data(), payload.size(), 7).code == heif_error_Ok);
+    void* second_raw = nullptr;
+    REQUIRE(plugin->new_decoder2(&second_raw, &options).code == heif_error_Ok);
+    std::unique_ptr<void, void (*)(void*)> second(second_raw, plugin->free_decoder);
+    auto err = plugin->push_data2(second_raw, payload.data(), payload.size(), 8);
+    REQUIRE(err.code == heif_error_Memory_allocation_error);
+    REQUIRE(err.subcode == heif_suberror_Security_limit_exceeded);
+    decoder.reset();
+    REQUIRE(plugin->push_data2(second_raw, payload.data(), payload.size(), 8).code == heif_error_Ok);
+  }
+
+  SECTION("a later push cannot bypass the complete block or total limit") {
+    REQUIRE(plugin->push_data2(raw, payload.data(), payload.size(), 7).code == heif_error_Ok);
+    if (GENERATE(false, true)) {
+      limits.max_total_memory = 0;
+      if (queued) {
+        // Queued packets are separate blocks, so each must fit independently.
+        limits.max_memory_block_size = allocation_bytes - 1;
+      }
+    }
+    else {
+      limits.max_memory_block_size = 0;
+    }
+    auto err = plugin->push_data2(raw, payload.data(), payload.size(), 8);
+    REQUIRE(err.code == heif_error_Memory_allocation_error);
+    REQUIRE(err.subcode == heif_suberror_Security_limit_exceeded);
+  }
+
+  SECTION("disabled limits allow multiple pushes") {
+    limits.max_memory_block_size = 0;
+    limits.max_total_memory = 0;
+    REQUIRE(plugin->push_data2(raw, payload.data(), payload.size(), 7).code == heif_error_Ok);
+    REQUIRE(plugin->push_data2(raw, payload.data(), payload.size(), 8).code == heif_error_Ok);
+  }
+
+  SECTION("legacy decoder entry points still accept input") {
+    void* legacy_raw = nullptr;
+    REQUIRE(plugin->new_decoder(&legacy_raw).code == heif_error_Ok);
+    std::unique_ptr<void, void (*)(void*)> legacy(legacy_raw, plugin->free_decoder);
+    REQUIRE(plugin->push_data(legacy_raw, payload.data(), payload.size()).code == heif_error_Ok);
+  }
+
+  if (queued) {
+    SECTION("queued packets share the total budget while remaining separate blocks") {
+      limits.max_total_memory = 2 * allocation_bytes;
+      REQUIRE(plugin->push_data2(raw, payload.data(), payload.size(), 7).code == heif_error_Ok);
+      REQUIRE(plugin->push_data2(raw, payload.data(), payload.size(), 8).code == heif_error_Ok);
+      auto err = plugin->push_data2(raw, payload.data(), payload.size(), 9);
+      REQUIRE(err.code == heif_error_Memory_allocation_error);
+      REQUIRE(err.subcode == heif_suberror_Security_limit_exceeded);
+    }
+  }
+
+  if (name == "ffmpeg") {
+    SECTION("malformed conversion releases partial packet storage") {
+      const std::vector<uint8_t> malformed{0, 0, 0, 4, 0xAA, 0xAA, 0xAA, 0xAA,
+                                           0, 0, 0, 32, 0xAA};
+      auto err = plugin->push_data2(raw, malformed.data(), malformed.size(), 7);
+      REQUIRE(err.code == heif_error_Decoder_plugin_error);
+      REQUIRE(err.subcode == heif_suberror_End_of_data);
+      {
+        MemoryHandle probe;
+        REQUIRE(probe.alloc(allocation_bytes, &limits, "discarded partial packet") == Error::Ok);
+      }
+      REQUIRE(plugin->push_data2(raw, payload.data(), payload.size(), 8).code == heif_error_Ok);
+    }
+  }
+
+  decoder.reset();
+  limits.max_memory_block_size = 0;
+  limits.max_total_memory = allocation_bytes;
+  MemoryHandle probe;
+  REQUIRE(probe.alloc(allocation_bytes, &limits, "destroyed wrapper input") == Error::Ok);
+}
 
 TEST_CASE("codec header scratch obeys limits while compressed input remains retained")
 {
