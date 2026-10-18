@@ -421,8 +421,8 @@ protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;
 
 private:
-  std::vector<OffsetToSample> m_entries;
   MemoryHandle m_memory_handle;
+  std::vector<OffsetToSample> m_entries;
 };
 
 
@@ -465,8 +465,8 @@ protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;
 
 private:
-  std::vector<SampleToChunk> m_entries;
   MemoryHandle m_memory_handle;
+  std::vector<SampleToChunk> m_entries;
 };
 
 
@@ -496,8 +496,8 @@ protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;
 
 private:
-  std::vector<uint32_t> m_offsets;
   MemoryHandle m_memory_handle;
+  std::vector<uint32_t> m_offsets;
 
   mutable size_t m_offset_start_pos = 0;
 };
@@ -533,8 +533,8 @@ protected:
 private:
   uint32_t m_fixed_sample_size = 0;
   uint32_t m_sample_count = 0;
-  std::vector<uint32_t> m_sample_sizes;
   MemoryHandle m_memory_handle;
+  std::vector<uint32_t> m_sample_sizes;
 };
 
 
@@ -563,8 +563,8 @@ protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;
 
 private:
-  std::vector<uint32_t> m_sync_samples;
   MemoryHandle m_memory_handle;
+  std::vector<uint32_t> m_sync_samples;
 
   bool m_all_samples_are_sync_samples = false;
 };
@@ -759,8 +759,8 @@ private:
     uint32_t group_description_index;
   };
 
-  std::vector<Entry> m_entries;
   MemoryHandle m_memory_handle;
+  std::vector<Entry> m_entries;
 };
 
 
@@ -821,8 +821,8 @@ private:
     std::shared_ptr<SampleGroupEntry> sample_group_entry;
   };
 
-  std::vector<Entry> m_entries;
   MemoryHandle m_memory_handle;
+  std::vector<Entry> m_entries;
 };
 
 // Bitrate
@@ -887,8 +887,8 @@ private:
   uint8_t  m_default_sample_info_size = 0;  // 0 -> variable length
   uint32_t m_num_samples = 0; // needed in case we are using the default sample size
 
-  std::vector<uint8_t> m_sample_sizes;
   MemoryHandle m_memory_handle;
+  std::vector<uint8_t> m_sample_sizes;
 };
 
 
@@ -930,10 +930,9 @@ private:
   bool m_need_64bit = false;
   mutable uint64_t m_offset_start_pos;
 
+  MemoryHandle m_memory_handle;
   // If |chunk_offset|==1, the SAI data of all samples is stored contiguously in the file
   std::vector<uint64_t> m_chunk_offset;
-
-  MemoryHandle m_memory_handle;
 };
 
 
@@ -962,8 +961,8 @@ protected:
   Error parse(BitstreamRange& range, const heif_security_limits*) override;
 
 private:
-  std::vector<uint8_t> m_sample_information;
   MemoryHandle m_memory_handle;
+  std::vector<uint8_t> m_sample_information;
 };
 
 

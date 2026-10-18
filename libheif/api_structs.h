@@ -84,6 +84,7 @@ struct heif_raw_sequence_sample
     heif_tai_timestamp_packet_release(timestamp);
   }
 
+  MemoryHandle memory_handle;
   std::vector<uint8_t> data;
   uint32_t duration = 0;
 

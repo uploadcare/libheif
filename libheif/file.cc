@@ -678,21 +678,23 @@ uint32_t HeifFile::get_item_type_4cc(heif_item_id ID) const
 }
 
 
-std::string HeifFile::get_content_type(heif_item_id ID) const
+const std::string& HeifFile::get_content_type(heif_item_id ID) const
 {
   auto infe_box = get_infe_box(ID);
   if (!infe_box) {
-    return "";
+    static const std::string empty;
+    return empty;
   }
 
   return infe_box->get_content_type();
 }
 
-std::string HeifFile::get_item_uri_type(heif_item_id ID) const
+const std::string& HeifFile::get_item_uri_type(heif_item_id ID) const
 {
   auto infe_box = get_infe_box(ID);
   if (!infe_box) {
-    return "";
+    static const std::string empty;
+    return empty;
   }
 
   return infe_box->get_item_uri_type();
@@ -740,7 +742,6 @@ Result<std::vector<uint8_t>> HeifFile::get_uncompressed_item_data(heif_item_id I
 
 
   uint32_t item_type = infe_box->get_item_type_4cc();
-  std::string content_type = infe_box->get_content_type();
 
   // --- decompress data
 
@@ -749,7 +750,7 @@ Result<std::vector<uint8_t>> HeifFile::get_uncompressed_item_data(heif_item_id I
   auto* output_memory_handle = memory_handle ? memory_handle : &scoped_memory_handle;
 
   if (item_type == fourcc("mime")) {
-    std::string encoding = infe_box->get_content_encoding();
+    const std::string& encoding = infe_box->get_content_encoding();
     // Skip the encoding comparisons when no encoding is set; falling through
     // to the raw read below is the right behaviour for the uncompressed case.
     // Skipping is also necessary to avoid libstdc++'s _S_compare(0, N) which
@@ -916,7 +917,6 @@ Result<std::vector<uint8_t>> HeifFile::get_item_data(heif_item_id ID, heif_metad
   }
 
   uint32_t item_type = infe_box->get_item_type_4cc();
-  std::string content_type = infe_box->get_content_type();
 
   // --- non 'mime' data (uncompressed)
 
@@ -938,7 +938,7 @@ Result<std::vector<uint8_t>> HeifFile::get_item_data(heif_item_id ID, heif_metad
 
   // --- mime data
 
-  std::string encoding = infe_box->get_content_encoding();
+  const std::string& encoding = infe_box->get_content_encoding();
 
   heif_metadata_compression compression;
 

@@ -4066,6 +4066,50 @@ Error Box_iref::parse(BitstreamRange& range, const heif_security_limits* limits)
     return unsupported_version_error("iref");
   }
 
+  // Count entries without allocating, then reserve descriptors and the index budget.
+  auto stream = range.get_istream();
+  const auto start = stream->get_position();
+  BitstreamRange scan(stream, range.get_remaining_bytes());
+  size_t count = 0;
+  while (!scan.eof()) {
+    BoxHeader header;
+    if (auto err = header.parse_header(scan)) {
+      return err;
+    }
+    const int width = get_version() == 0 ? 16 : 32;
+    scan.read_uint(width);
+    const auto references = scan.read16();
+    if (scan.error() || references > scan.get_remaining_bytes() / (width / 8)) {
+      return {heif_error_Invalid_input, heif_suberror_End_of_data};
+    }
+    scan.skip(size_t(references) * (width / 8));
+    count++;
+    if (limits->max_items && count > limits->max_items) {
+      return {heif_error_Invalid_input, heif_suberror_Security_limit_exceeded,
+              "Too many iref reference entries"};
+    }
+  }
+  if (!stream->seek(start)) {
+    return {heif_error_Invalid_input, heif_suberror_End_of_data};
+  }
+  if (auto err = m_memory_handle.alloc(count, sizeof(Reference), limits, "iref reference descriptors")) {
+    return err;
+  }
+  if (count != 0) {
+    // Estimate 128 fixed bytes + 128 bytes per reference entry. Each entry adds
+    // one stored index, and the number of hash nodes cannot exceed the entry count.
+    // With buckets reserved up front, libstdc++/libc++ measurements were about
+    // 104 bytes per entry for nodes, buckets and index vectors, including allocator
+    // rounding and a 16-byte allowance per allocation. Rounding up to 128 leaves
+    // about 23% headroom for capacity growth and implementation differences.
+    // The fixed 128 bytes covers the map object (40/56 bytes in those builds) and
+    // small-table allocation overhead. Charge this estimate once before building.
+    if (auto err = m_memory_handle.alloc(count + 1, 128, limits, "estimated iref source index")) {
+      return err;
+    }
+  }
+  m_references.reserve(count);
+
   while (!range.eof()) {
     // Cap the total number of reference entries, matching the item-count caps in
     // Box_iloc/Box_iinf/Box_ipma (and the per-entry nRefs cap below). Without it
@@ -4117,6 +4161,10 @@ Error Box_iref::parse(BitstreamRange& range, const heif_security_limits* limits)
               sstr.str()};
     }
 
+    if (auto err = m_memory_handle.alloc(nRefs, sizeof(heif_item_id), limits, "iref reference IDs")) {
+      return err;
+    }
+    ref.to_item_ID.reserve(nRefs);
     for (int i = 0; i < nRefs; i++) {
       if (range.eof()) {
         std::stringstream sstr;
@@ -4130,7 +4178,7 @@ Error Box_iref::parse(BitstreamRange& range, const heif_security_limits* limits)
       ref.to_item_ID.push_back(static_cast<uint32_t>(range.read_uint(read_len)));
     }
 
-    m_references.push_back(ref);
+    m_references.push_back(std::move(ref));
   }
 
 

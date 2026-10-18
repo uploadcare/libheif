@@ -48,6 +48,7 @@ class ImageMetadata
 public:
   heif_item_id item_id;
   std::string item_type;  // e.g. "Exif"
+  MemoryHandle m_string_memory;
   std::string content_type;
   std::string item_uri_type;
 

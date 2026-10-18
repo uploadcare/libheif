@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace seqfile {
@@ -126,6 +127,7 @@ struct SequenceFileParams
   uint32_t sample_size = 1;
 
   std::vector<SampleAuxInfo> aux_infos;
+  std::string track_content_id;
 };
 
 inline std::vector<uint8_t> build_sequence_file(const SequenceFileParams& p)
@@ -291,6 +293,37 @@ inline std::vector<uint8_t> build_sequence_file(const SequenceFileParams& p)
     return box("saio", saio_payload);
   };
 
+  std::vector<uint8_t> track_meta;
+  if (!p.track_content_id.empty()) {
+    std::vector<uint8_t> infe;
+    put32(infe, 0x02000000); // version 2
+    put16(infe, 1); // item ID
+    put16(infe, 0); // protection index
+    put_fourcc(infe, "uri ");
+    infe.push_back(0); // empty item name
+    const std::string type = "urn:uuid:15beb8e4-944d-5fc6-a3dd-cb5a7e655c73";
+    infe.insert(infe.end(), type.begin(), type.end());
+    infe.push_back(0);
+    std::vector<uint8_t> iinf;
+    put32(iinf, 0); put16(iinf, 1);
+    append(iinf, box("infe", infe));
+    std::vector<uint8_t> iloc;
+    put32(iloc, 0x01000000); // version 1
+    iloc.push_back(0x44); iloc.push_back(0); // 32-bit offsets and lengths, no base offset
+    put16(iloc, 1); put16(iloc, 1); // item count and ID
+    put16(iloc, 1); put16(iloc, 0); // construction method: idat; data reference index
+    put16(iloc, 1); put32(iloc, 0); // extent count and offset
+    put32(iloc, static_cast<uint32_t>(p.track_content_id.size() + 1));
+    std::vector<uint8_t> idat(p.track_content_id.begin(), p.track_content_id.end());
+    idat.push_back(0);
+    std::vector<uint8_t> meta;
+    put32(meta, 0);
+    append(meta, box("iinf", iinf));
+    append(meta, box("iloc", iloc));
+    append(meta, box("idat", idat));
+    track_meta = box("meta", meta);
+  }
+
   auto assemble = [&](const std::vector<uint8_t>& stco,
                       const std::vector<std::vector<uint8_t>>& saio_boxes) {
     std::vector<uint8_t> stbl_payload = concat({stsd, stts, stsc, stsz, stco});
@@ -299,7 +332,7 @@ inline std::vector<uint8_t> build_sequence_file(const SequenceFileParams& p)
     std::vector<uint8_t> stbl = box("stbl", stbl_payload);
     std::vector<uint8_t> minf = box("minf", concat({nmhd, stbl}));
     std::vector<uint8_t> mdia = box("mdia", concat({mdhd, hdlr, minf}));
-    std::vector<uint8_t> trak = box("trak", concat({tkhd, edts, mdia}));
+    std::vector<uint8_t> trak = box("trak", concat({tkhd, edts, mdia, track_meta}));
     std::vector<uint8_t> moov = box("moov", concat({mvhd, trak}));
     return moov;
   };

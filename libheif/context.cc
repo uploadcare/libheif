@@ -1123,7 +1123,7 @@ Error HeifContext::interpret_heif_file_images()
 
   for (heif_item_id id : image_IDs) {
     uint32_t item_type = m_heif_file->get_item_type_4cc(id);
-    std::string content_type = m_heif_file->get_content_type(id);
+    const std::string& content_type = m_heif_file->get_content_type(id);
 
     // 'rgan': skip region annotations, handled next
     // 'iden': iden images are no metadata
@@ -1131,15 +1131,20 @@ Error HeifContext::interpret_heif_file_images()
       continue;
     }
 
-    std::string item_uri_type = m_heif_file->get_item_uri_type(id);
+    const std::string& item_uri_type = m_heif_file->get_item_uri_type(id);
 
     // we now assign all kinds of metadata to the image, not only 'Exif' and 'XMP'
 
     std::shared_ptr<ImageMetadata> metadata = std::make_shared<ImageMetadata>();
     metadata->item_id = id;
     metadata->item_type = fourcc_to_string(item_type);
+    for (const auto* text : {&content_type, &item_uri_type}) {
+      if (auto err = metadata->m_string_memory.alloc(text->size(), get_security_limits(), "metadata type")) {
+        return err;
+      }
+    }
     metadata->content_type = content_type;
-    metadata->item_uri_type = std::move(item_uri_type);
+    metadata->item_uri_type = item_uri_type;
 
     auto metadataResult = m_heif_file->get_uncompressed_item_data(id, &metadata->m_memory_handle);
     if (!metadataResult) {
@@ -1380,7 +1385,8 @@ bool HeifContext::has_alpha(heif_item_id ID) const
   uint32_t image_type = m_heif_file->get_item_type_4cc(ID);
   if (image_type == fourcc("grid")) {
 
-    Result gridDataResult = m_heif_file->get_uncompressed_item_data(ID);
+    MemoryHandle input_memory;
+    Result gridDataResult = m_heif_file->get_uncompressed_item_data(ID, &input_memory);
     if (!gridDataResult) {
       return false;
     }

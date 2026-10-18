@@ -1132,6 +1132,7 @@ protected:
   void derive_box_version() override;
 
 private:
+  MemoryHandle m_memory_handle;
   std::vector<Reference> m_references;
 
   // Index from 'from_item_ID' to the positions in m_references, so the

@@ -362,6 +362,7 @@ Error RegionGeometry_Polygon::parse(const std::vector<uint8_t>& data,
     return err;
   }
 
+  points.reserve(numPoints);
   for (uint32_t i = 0; i < numPoints; i++) {
     Point p;
     p.x = parse_signed(data, field_size, dataOffset);

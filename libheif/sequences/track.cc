@@ -580,18 +580,24 @@ Error Track::load(const std::shared_ptr<Box_trak>& trak_box)
             };
           }
 
+          MemoryHandle input_memory;
           std::vector<uint8_t> data;
-          Error err = iloc->read_data(id, m_heif_context->get_heif_file()->get_reader(), idat, &data, m_heif_context->get_security_limits());
+          Error err = iloc->read_data(id, m_heif_context->get_heif_file()->get_reader(), idat, &data, m_heif_context->get_security_limits(), &input_memory);
           if (err) {
             return err;
           }
 
+          MemoryHandle content_id_memory;
+          if (auto err = content_id_memory.alloc(data.size(), m_heif_context->get_security_limits(), "track content ID")) {
+            return err;
+          }
           Result<std::string> contentIdResult = vector_to_string(data);
           if (!contentIdResult) {
             return contentIdResult.error();
           }
 
-          m_track_info.gimi_track_content_id = *contentIdResult;
+          m_track_info.gimi_track_content_id = std::move(*contentIdResult);
+          m_track_info_memory = std::move(content_id_memory);
         }
       }
     }
@@ -1265,6 +1271,7 @@ Result<heif_raw_sequence_sample*> Track::get_next_sample_raw_data(const heif_dec
   // Move the payload out of the function-local extent instead of copying it. The
   // extent is destroyed when this function returns anyway, and moving halves the
   // peak memory needed per sample.
+  sample->memory_handle = std::move(extent.m_raw_memory_handle);
   sample->data = std::move(**readResult);
 
   // read sample duration

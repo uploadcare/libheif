@@ -40,6 +40,9 @@
 #include "codecs/jpeg2000_boxes.h"
 #include "codecs/vvc_dec.h"
 #include "context.h"
+#include "api_structs.h"
+#include "sequence_file_builder.h"
+#include "sequences/track.h"
 #include "image-items/mask_image.h"
 #include "image-items/tiled.h"
 #include "region.h"
@@ -308,7 +311,7 @@ size_t parsed_storage_size(const std::vector<uint8_t>& data)
 
 size_t allocation_size(const std::string& kind, uint32_t count)
 {
-  if (kind == "hvcC" || kind == "vvcC") {
+  if (kind == "hvcC" || kind == "vvcC" || kind == "avcS" || kind == "avcP" || kind == "avcE") {
     return parsed_storage_size(make_box(kind, count));
   }
   if (kind == "auxC") {
@@ -570,7 +573,8 @@ TEST_CASE("box payload allocations respect block and total memory limits")
   INFO("box: " << kind);
   const auto data = make_box(kind, 32);
   const size_t amount = allocation_size(kind, 32);
-  const size_t block_amount = (kind == "auxC" || kind == "hvcC" || kind == "vvcC") ? 32 : amount;
+  const size_t block_amount = (kind == "auxC" || kind == "hvcC" || kind == "vvcC" ||
+                               kind == "avcS" || kind == "avcP" || kind == "avcE") ? 32 : amount;
   heif_security_limits limits = *heif_get_global_security_limits();
   limits.max_memory_block_size = block_amount;
   limits.max_total_memory = amount;
@@ -1432,10 +1436,15 @@ TEST_CASE("region opening counts input and parsed points concurrently")
   REQUIRE(region.encode(payload) == Error::Ok);
   const auto bytes = make_mask_file(payload);
   const size_t point_bytes = polygon->points.size() * sizeof(RegionGeometry_Polygon::Point);
-  const size_t table_bytes = sizeof(IpmaTable::Entry) + 2 * sizeof(Box_ipma::PropertyAssociation);
+  Box_iref references;
+  references.add_references(1, fourcc("cdsc"), {2});
+  StreamWriter reference_writer;
+  REQUIRE(static_cast<const Box&>(references).write(reference_writer) == Error::Ok);
+  const size_t reference_bytes = parsed_storage_size(reference_writer.get_data());
+  const size_t table_bytes = sizeof(IpmaTable::Entry) + 2 * sizeof(Box_ipma::PropertyAssociation) + reference_bytes;
   const bool sufficient = GENERATE(false, true);
   heif_security_limits limits = *heif_get_global_security_limits();
-  limits.max_memory_block_size = std::max(payload.size(), point_bytes);
+  limits.max_memory_block_size = std::max({payload.size(), point_bytes, reference_bytes});
   limits.max_total_memory = table_bytes + payload.size() + point_bytes - (sufficient ? 0 : 1);
   HeifContext context;
   context.set_security_limits(&limits);
@@ -1948,7 +1957,7 @@ TEST_CASE("decoded Bayer tables obey allocation budgets and stay charged through
     auto image = std::move(*result);
     const auto& pattern = image->get_any_bayer_pattern();
     REQUIRE(pattern.pixels->values.size() == count);
-    REQUIRE(pattern.pixels->values.front().component_gain == 1);
+    REQUIRE(pattern.pixels->values.front().component_gain == 1.0f);
     REQUIRE(image->find_component_description(pattern.pixels->values.front().component_id));
     auto retained = std::make_unique<ImageDescription>();
     retained->copy_metadata_from(*image);
@@ -2058,7 +2067,8 @@ TEST_CASE("unci assembled units enforce complete block and concurrent total budg
   const bool whole_item = GENERATE(false, true);
   heif_security_limits limits = *heif_get_global_security_limits();
   limits.max_memory_block_size = 32;
-  limits.max_total_memory = 90;
+  // Cached input (21), assembly (32), compressed unit (21), scratch (32), and output (16).
+  limits.max_total_memory = 122;
   TotalMemoryTracker tracker(&limits);
   auto file = std::make_shared<HeifFile>();
   file->set_security_limits(&limits);
@@ -2113,11 +2123,11 @@ TEST_CASE("unci assembled units enforce complete block and concurrent total budg
       REQUIRE(data == std::vector<uint8_t>(32, 0xAA));
       limits.max_memory_block_size = 0;
       MemoryHandle probe;
-      REQUIRE(probe.alloc(38, &limits, "remaining budget") != Error::Ok);
-      REQUIRE(probe.alloc(37, &limits, "remaining budget") == Error::Ok);
+      REQUIRE(probe.alloc(70, &limits, "remaining budget") != Error::Ok);
+      REQUIRE(probe.alloc(69, &limits, "remaining budget") == Error::Ok);
     }
     MemoryHandle probe;
-    REQUIRE(probe.alloc(69, &limits, "released output budget") == Error::Ok);
+    REQUIRE(probe.alloc(101, &limits, "released output budget") == Error::Ok);
   }
 
   SECTION("individually valid units cannot exceed the complete block limit") {
@@ -2139,7 +2149,7 @@ TEST_CASE("unci assembled units enforce complete block and concurrent total budg
   }
 
   SECTION("concurrent unit and assembly storage must fit the total budget") {
-    limits.max_total_memory = 89;
+    limits.max_total_memory = 121;
     {
       MemoryHandle owner;
       std::vector<uint8_t> data;
@@ -2157,7 +2167,7 @@ TEST_CASE("unci assembled units enforce complete block and concurrent total budg
     }
     limits.max_memory_block_size = 0;
     MemoryHandle probe;
-    REQUIRE(probe.alloc(68, &limits, "released failed output") == Error::Ok);
+    REQUIRE(probe.alloc(100, &limits, "released failed output") == Error::Ok);
   }
 
   SECTION("disabled limits allow the assembled output") {
@@ -2178,17 +2188,19 @@ TEST_CASE("unci assembled units enforce complete block and concurrent total budg
 
   SECTION("single blob output retains its decompression reservation") {
     properties.icef = nullptr;
-    limits.max_total_memory = 37;
+    limits.max_total_memory = 54; // Cached input (21), bounded scratch (17), and output (16).
     {
       MemoryHandle owner;
       auto result = decoder.decompress_whole_item(extent, properties, 16, owner);
       REQUIRE(result);
       REQUIRE(*result == std::vector<uint8_t>(16, 0xAA));
       MemoryHandle probe;
-      REQUIRE(probe.alloc(1, &limits, "retained output") != Error::Ok);
+      REQUIRE(probe.alloc(18, &limits, "retained output") != Error::Ok);
+      REQUIRE(probe.alloc(17, &limits, "released scratch") == Error::Ok);
     }
     MemoryHandle probe;
-    REQUIRE(probe.alloc(16, &limits, "released output") == Error::Ok);
+    limits.max_memory_block_size = 0;
+    REQUIRE(probe.alloc(33, &limits, "released output") == Error::Ok);
   }
 }
 
@@ -2587,4 +2599,65 @@ TEST_CASE("replacing parsed property strings preserves snapshots and releases th
   REQUIRE(probe.alloc(1, &limits, "retained property snapshot") != Error::Ok);
   snapshot.reset();
   REQUIRE(probe.alloc(length, &limits, "released property snapshot") == Error::Ok);
+}
+
+TEST_CASE("returned raw samples retain their payload budget until released")
+{
+  seqfile::SequenceFileParams params;
+  params.mvhd_v1 = false;
+  params.mvhd_duration = params.mdhd_duration = 20;
+  params.with_editlist = false;
+  params.stts = {{2, 10}};
+  params.num_samples = 2;
+  params.sample_size = 8192;
+  const auto bytes = seqfile::build_sequence_file(params);
+  HeifContext context;
+  auto& limits = *context.get_security_limits();
+  limits.max_memory_block_size = 0;
+  limits.max_total_memory = 32768;
+  REQUIRE(context.read_from_memory(bytes.data(), bytes.size(), false) == Error::Ok);
+  auto ids = context.get_track_IDs();
+  REQUIRE(ids.size() == 1);
+  auto track = context.get_track(ids[0]);
+  REQUIRE(track);
+  MemoryHandle probe;
+  REQUIRE(probe.alloc(limits.max_total_memory - 1024, &limits, "small sequence bookkeeping") == Error::Ok);
+  probe.free();
+  auto first_result = (*track)->get_next_sample_raw_data(nullptr);
+  REQUIRE(first_result);
+  std::unique_ptr<heif_raw_sequence_sample> first(*first_result);
+  REQUIRE(first->data.size() == params.sample_size);
+  CHECK(probe.alloc(limits.max_total_memory - params.sample_size + 1, &limits, "first retained sample") != Error::Ok);
+  probe.free();
+  auto second_result = (*track)->get_next_sample_raw_data(nullptr);
+  REQUIRE(second_result);
+  std::unique_ptr<heif_raw_sequence_sample> second(*second_result);
+  REQUIRE(second->data.size() == params.sample_size);
+  CHECK(probe.alloc(limits.max_total_memory - 2 * params.sample_size + 1, &limits, "two retained samples") != Error::Ok);
+  probe.free();
+  first.reset();
+  REQUIRE(probe.alloc(limits.max_total_memory - params.sample_size - 1024, &limits, "released first sample") == Error::Ok);
+  probe.free();
+  second.reset();
+  REQUIRE(probe.alloc(limits.max_total_memory - 1024, &limits, "released both samples") == Error::Ok);
+}
+
+TEST_CASE("track content IDs retain their item payload reservation after opening")
+{
+  seqfile::SequenceFileParams params;
+  params.with_editlist = false;
+  params.track_content_id = std::string(65536, 'x');
+  const auto bytes = seqfile::build_sequence_file(params);
+  HeifContext context;
+  auto& limits = *context.get_security_limits();
+  limits.max_memory_block_size = limits.max_total_memory = 512 * 1024;
+  REQUIRE(context.read_from_memory(bytes.data(), bytes.size(), false) == Error::Ok);
+  auto ids = context.get_track_IDs();
+  REQUIRE(ids.size() == 1);
+  auto track = context.get_track(ids[0]);
+  REQUIRE(track);
+  REQUIRE((*track)->get_track_info().gimi_track_content_id == params.track_content_id);
+  MemoryHandle probe;
+  CHECK(probe.alloc(limits.max_total_memory - params.track_content_id.size() + 1,
+                    &limits, "retained track content ID") != Error::Ok);
 }
