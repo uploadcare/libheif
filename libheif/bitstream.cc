@@ -435,40 +435,42 @@ std::string BitstreamRange::read_string()
 Error BitstreamRange::read_string(std::string& output, MemoryHandle& memory_handle,
                                  const heif_security_limits* limits)
 {
-  char buffer[4096];
-  size_t buffered = 0;
   auto istr = get_istream();
-  while (!eof()) {
-    if (!prepare_read(1)) {
-      return get_error();
-    }
-    char c;
-    if (!istr->read(&c, 1)) {
+  const auto start = istr->get_position();
+  BitstreamRange scan(istr, get_remaining_bytes());
+  size_t length = 0;
+  size_t consumed = 0;
+  while (!scan.eof()) {
+    const auto c = scan.read8();
+    if (scan.error()) {
       set_eof_while_reading();
       return get_error();
     }
+    consumed++;
     // Preserve read_string()'s handling of a non-terminated final byte.
-    const bool finished = c == 0 || eof();
-    if (!finished) {
-      buffer[buffered++] = c;
-    }
-    if (buffered == sizeof(buffer) || finished) {
-      if (buffered > output.max_size() - output.size() ||
-          (limits && limits->max_memory_block_size &&
-           (output.size() > limits->max_memory_block_size ||
-            buffered > limits->max_memory_block_size - output.size()))) {
-        return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
-                "Box string exceeds maximum memory block size"};
-      }
-      if (Error err = memory_handle.alloc(buffered, limits, "box string")) {
-        return err;
-      }
-      output.append(buffer, buffered);
-      buffered = 0;
-    }
-    if (finished) {
+    if (c == 0 || scan.eof()) {
       break;
     }
+    length++;
+    if (limits && limits->max_memory_block_size && length > limits->max_memory_block_size) {
+      return {heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
+              "Box string exceeds maximum memory block size"};
+    }
+  }
+  if (!istr->seek(start)) {
+    set_eof_while_reading();
+    return get_error();
+  }
+  if (auto err = memory_handle.alloc(length, limits, "box string")) {
+    return err;
+  }
+  // Allocate once, avoiding geometric capacity growth and simultaneous old/new buffers.
+  output.resize(length);
+  if (length && !read(reinterpret_cast<uint8_t*>(output.data()), length)) {
+    return get_error();
+  }
+  if (consumed > length) {
+    read8();
   }
   return get_error();
 }

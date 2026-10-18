@@ -148,8 +148,8 @@ public:
   };
 
   bool closed = true;
-  std::vector<Point> points;
   MemoryHandle m_memory_handle;
+  std::vector<Point> points;
 };
 
 class RegionGeometry_ReferencedMask : public RegionGeometry
@@ -177,8 +177,8 @@ public:
 
   int32_t x,y;
   uint32_t width, height;
-  std::vector<uint8_t> mask_data;
   MemoryHandle m_memory_handle;
+  std::vector<uint8_t> mask_data;
 
   heif_region_type getRegionType() override { return heif_region_type_inline_mask; }
 };

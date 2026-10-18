@@ -255,9 +255,9 @@ protected:
     Error parse(BitstreamRange &range, const heif_security_limits* limits) override;
 
 private:
+    MemoryHandle m_memory_handle;
     std::vector<uint8_t> m_bitDepths;
     std::vector<PaletteEntry> m_entries;
-    MemoryHandle m_memory_handle;
 };
 
 

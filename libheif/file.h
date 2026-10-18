@@ -123,9 +123,9 @@ public:
 
   uint32_t get_item_type_4cc(heif_item_id ID) const;
 
-  std::string get_content_type(heif_item_id ID) const;
+  const std::string& get_content_type(heif_item_id ID) const;
 
-  std::string get_item_uri_type(heif_item_id ID) const;
+  const std::string& get_item_uri_type(heif_item_id ID) const;
 
   Result<std::vector<uint8_t>> get_uncompressed_item_data(heif_item_id ID,
                                                           MemoryHandle* memory_handle = nullptr,

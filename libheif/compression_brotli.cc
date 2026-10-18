@@ -23,6 +23,7 @@
 #if HAVE_BROTLI
 
 const size_t BUF_SIZE = (1 << 18);
+#include <algorithm>
 #include <brotli/decode.h>
 #include <brotli/encode.h>
 #include <cstring>
@@ -45,7 +46,22 @@ Result<std::vector<uint8_t>> decompress_brotli(const std::vector<uint8_t> &compr
                      "Total metadata decompression budget exceeded");
     }
     BrotliDecoderResult result = BROTLI_DECODER_RESULT_ERROR;
-    std::vector<uint8_t> buffer(BUF_SIZE, 0);
+    MemoryHandle scratch_memory;
+    size_t scratch_size = BUF_SIZE;
+    if (limits && limits->max_memory_block_size) {
+        scratch_size = std::min<uint64_t>(scratch_size, limits->max_memory_block_size);
+    }
+    if (limits && limits->max_total_memory) {
+        scratch_size = std::min<uint64_t>(scratch_size, std::max<uint64_t>(1, limits->max_total_memory / 2));
+    }
+    // One extra byte detects output exceeding the declared size.
+    if (max_output_size < scratch_size) {
+        scratch_size = static_cast<size_t>(max_output_size) + 1;
+    }
+    if (auto err = scratch_memory.alloc(scratch_size, limits, "brotli scratch buffer")) {
+        return err;
+    }
+    std::vector<uint8_t> buffer(scratch_size, 0);
     size_t available_in = compressed_input.size();
     const std::uint8_t *next_in = reinterpret_cast<const std::uint8_t *>(compressed_input.data());
     size_t available_out = buffer.size();
@@ -78,11 +94,32 @@ Result<std::vector<uint8_t>> decompress_brotli(const std::vector<uint8_t> &compr
                          "Decompressed brotli data exceeds the maximum memory block size");
         }
 
-        if (Error memErr = output_memory_handle.alloc(n_new_bytes, limits, "brotli decompression output")) {
-            return memErr;
+        if (n_new_bytes) {
+            const size_t new_size = output.size() + n_new_bytes;
+            if (new_size <= output.capacity()) {
+              output.insert(output.end(), buffer.data(), buffer.data() + n_new_bytes);
+            }
+            else {
+              size_t capacity = std::max(new_size, output.capacity() <= output.max_size() / 2
+                                        ? output.capacity() * 2 : output.max_size());
+              capacity = std::min<uint64_t>(capacity, max_output_size);
+              if (limits && limits->max_memory_block_size) {
+                capacity = std::min<uint64_t>(capacity, limits->max_memory_block_size);
+              }
+              if (auto err = output_memory_handle.alloc(capacity, limits, "brotli decompression output")) {
+                  return err;
+              }
+              const size_t old_capacity = output.capacity();
+              {
+                  std::vector<uint8_t> replacement;
+                  replacement.reserve(capacity);
+                  replacement.insert(replacement.end(), output.begin(), output.end());
+                  replacement.insert(replacement.end(), buffer.data(), buffer.data() + n_new_bytes);
+                  output.swap(replacement);
+              }
+              output_memory_handle.free(old_capacity);
+            }
         }
-
-        output.insert(output.end(), buffer.data(), buffer.data() + n_new_bytes);
         return Error::Ok;
     };
 

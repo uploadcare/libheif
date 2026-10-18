@@ -172,7 +172,8 @@ Error ImageItem_Grid::read_grid_spec()
 {
   auto heif_file = get_context()->get_heif_file();
 
-  auto gridDataResult = heif_file->get_uncompressed_item_data(get_id());
+  MemoryHandle input_memory;
+  auto gridDataResult = heif_file->get_uncompressed_item_data(get_id(), &input_memory);
   if (!gridDataResult) {
     return gridDataResult.error();
   }

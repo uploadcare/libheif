@@ -219,7 +219,8 @@ TEST_CASE("metadata decompression work is cumulative across item reads") {
   heif_context* ctx = heif_context_alloc();
   REQUIRE(ctx != nullptr);
   auto* limits = heif_context_get_security_limits(ctx);
-  limits->max_total_memory = output_size + output_size / 2;
+  // Leave room for scratch and output growth, but not three complete reads.
+  limits->max_total_memory = 2 * output_size + output_size / 2;
   REQUIRE(heif_context_read_from_memory_without_copy(ctx, file.data(), file.size(), nullptr).code == heif_error_Ok);
 
   uint8_t* item_data = nullptr;
@@ -229,9 +230,11 @@ TEST_CASE("metadata decompression work is cumulative across item reads") {
   REQUIRE(method == heif_metadata_compression_brotli);
   heif_release_item_data(ctx, &item_data);
 
-  REQUIRE(heif_item_get_item_data(ctx, 2, nullptr, &item_data, &item_size).code == heif_error_Ok);
-  REQUIRE(item_size == output_size);
-  heif_release_item_data(ctx, &item_data);
+  for (int read = 0; read < 2; ++read) {
+    REQUIRE(heif_item_get_item_data(ctx, 2, nullptr, &item_data, &item_size).code == heif_error_Ok);
+    REQUIRE(item_size == output_size);
+    heif_release_item_data(ctx, &item_data);
+  }
 
   auto err = heif_item_get_item_data(ctx, 2, nullptr, &item_data, &item_size);
   REQUIRE(err.subcode == heif_suberror_Security_limit_exceeded);

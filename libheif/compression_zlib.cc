@@ -26,6 +26,7 @@
 #if HAVE_ZLIB
 
 #include <zlib.h>
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 
@@ -104,8 +105,22 @@ Result<std::vector<uint8_t>> do_inflate(const std::vector<uint8_t>& compressed_i
 
   // decompress data with zlib
 
-  std::vector<uint8_t> dst;
-  dst.resize(8192);
+  MemoryHandle scratch_memory;
+  size_t scratch_size = 8192;
+  if (limits && limits->max_memory_block_size) {
+    scratch_size = std::min<uint64_t>(scratch_size, limits->max_memory_block_size);
+  }
+  if (limits && limits->max_total_memory) {
+    scratch_size = std::min<uint64_t>(scratch_size, std::max<uint64_t>(1, limits->max_total_memory / 2));
+  }
+  // One extra byte detects output exceeding the declared size.
+  if (max_output_size < scratch_size) {
+    scratch_size = static_cast<size_t>(max_output_size) + 1;
+  }
+  if (auto err = scratch_memory.alloc(scratch_size, limits, "zlib scratch buffer")) {
+    return err;
+  }
+  std::vector<uint8_t> dst(scratch_size);
 
   z_stream strm;
   memset(&strm, 0, sizeof(z_stream));
@@ -150,21 +165,9 @@ Result<std::vector<uint8_t>> do_inflate(const std::vector<uint8_t>& compressed_i
         break;
       }
 
-      // Grow the scratch buffer so inflate() can make progress. Bound its growth
-      // against the per-block security limit so a pathological stream cannot force
-      // an unbounded scratch allocation (the accumulated output is bounded
-      // separately, via output_memory_handle below).
-      size_t new_size = dst.size() * 2;
-      if (limits && limits->max_memory_block_size != 0 && new_size > limits->max_memory_block_size) {
-        inflateEnd(&strm);
-        return Error(heif_error_Memory_allocation_error, heif_suberror_Security_limit_exceeded,
-                     "zlib inflate scratch buffer exceeds the maximum block size");
-      }
-
-      dst.resize(new_size);
-      strm.next_out = dst.data();
-      strm.avail_out = (uInt)dst.size();
-      continue;
+      inflateEnd(&strm);
+      return Error(heif_error_Invalid_input, heif_suberror_Decompression_invalid_data,
+                   "zlib inflate made no progress");
     }
 
     if (err == Z_NEED_DICT || err == Z_DATA_ERROR || err == Z_STREAM_ERROR) {
@@ -193,12 +196,33 @@ Result<std::vector<uint8_t>> do_inflate(const std::vector<uint8_t>& compressed_i
                    "Decompressed zlib/deflate data exceeds the maximum memory block size");
     }
 
-    if (Error memErr = output_memory_handle.alloc(n_new_bytes, limits, "zlib/deflate decompression output")) {
-      inflateEnd(&strm);
-      return memErr;
+    if (n_new_bytes) {
+      const size_t new_size = output.size() + n_new_bytes;
+      if (new_size <= output.capacity()) {
+        output.insert(output.end(), dst.begin(), dst.begin() + n_new_bytes);
+      }
+      else {
+        size_t capacity = std::max(new_size, output.capacity() <= output.max_size() / 2
+                                  ? output.capacity() * 2 : output.max_size());
+        capacity = std::min<uint64_t>(capacity, max_output_size);
+        if (limits && limits->max_memory_block_size) {
+          capacity = std::min<uint64_t>(capacity, limits->max_memory_block_size);
+        }
+        if (auto err = output_memory_handle.alloc(capacity, limits, "zlib/deflate decompression output")) {
+          inflateEnd(&strm);
+          return err;
+        }
+        const size_t old_capacity = output.capacity();
+        {
+          std::vector<uint8_t> replacement;
+          replacement.reserve(capacity);
+          replacement.insert(replacement.end(), output.begin(), output.end());
+          replacement.insert(replacement.end(), dst.begin(), dst.begin() + n_new_bytes);
+          output.swap(replacement);
+        }
+        output_memory_handle.free(old_capacity);
+      }
     }
-
-    output.insert(output.end(), dst.begin(), dst.begin() + n_new_bytes);
   } while (err != Z_STREAM_END);
 
 

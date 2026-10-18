@@ -31,6 +31,28 @@
 #include <set>
 
 
+static Error validate_parameter_set_lengths(BitstreamRange& range, uint8_t count)
+{
+  if (range.error()) {
+    return range.get_error();
+  }
+  auto stream = range.get_istream();
+  const auto start = stream->get_position();
+  BitstreamRange scan(stream, range.get_remaining_bytes());
+  for (uint8_t i = 0; i < count; i++) {
+    const auto length = scan.read16();
+    if (scan.error() || length > scan.get_remaining_bytes()) {
+      return {heif_error_Invalid_input, heif_suberror_End_of_data};
+    }
+    scan.skip(length);
+  }
+  if (!stream->seek(start)) {
+    return {heif_error_Invalid_input, heif_suberror_End_of_data};
+  }
+  return Error::Ok;
+}
+
+
 Error Box_avcC::parse(BitstreamRange& range, const heif_security_limits* limits)
 {
   m_configuration.configuration_version = range.read8();
@@ -42,6 +64,13 @@ Error Box_avcC::parse(BitstreamRange& range, const heif_security_limits* limits)
       (lengthSizeMinusOneWithReserved & 0b00000011) + 1;
 
   uint8_t numOfSequenceParameterSets = (range.read8() & 0b00011111);
+  if (auto err = validate_parameter_set_lengths(range, numOfSequenceParameterSets)) {
+    return err;
+  }
+  if (auto err = m_memory_handle.alloc(numOfSequenceParameterSets, sizeof(std::vector<uint8_t>), limits, "avcC parameter descriptors")) {
+    return err;
+  }
+  m_sps.reserve(numOfSequenceParameterSets);
   for (int i = 0; i < numOfSequenceParameterSets; i++) {
     uint16_t sequenceParameterSetLength = range.read16();
     if (sequenceParameterSetLength > range.get_remaining_bytes()) {
@@ -56,6 +85,13 @@ Error Box_avcC::parse(BitstreamRange& range, const heif_security_limits* limits)
   }
 
   uint8_t numOfPictureParameterSets = range.read8();
+  if (auto err = validate_parameter_set_lengths(range, numOfPictureParameterSets)) {
+    return err;
+  }
+  if (auto err = m_memory_handle.alloc(numOfPictureParameterSets, sizeof(std::vector<uint8_t>), limits, "avcC parameter descriptors")) {
+    return err;
+  }
+  m_pps.reserve(numOfPictureParameterSets);
   for (int i = 0; i < numOfPictureParameterSets; i++) {
     uint16_t pictureParameterSetLength = range.read16();
     if (pictureParameterSetLength > range.get_remaining_bytes()) {
@@ -78,6 +114,13 @@ Error Box_avcC::parse(BitstreamRange& range, const heif_security_limits* limits)
       m_configuration.bit_depth_luma = 8 + (range.read8() & 0b00000111);
       m_configuration.bit_depth_chroma = 8 + (range.read8() & 0b00000111);
       uint8_t numOfSequenceParameterSetExt = range.read8();
+      if (auto err = validate_parameter_set_lengths(range, numOfSequenceParameterSetExt)) {
+        return err;
+      }
+      if (auto err = m_memory_handle.alloc(numOfSequenceParameterSetExt, sizeof(std::vector<uint8_t>), limits, "avcC parameter descriptors")) {
+        return err;
+      }
+      m_sps_ext.reserve(numOfSequenceParameterSetExt);
       for (int i = 0; i < numOfSequenceParameterSetExt; i++) {
         uint16_t sequenceParameterSetExtLength = range.read16();
         if (sequenceParameterSetExtLength > range.get_remaining_bytes()) {

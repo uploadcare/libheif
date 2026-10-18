@@ -266,7 +266,8 @@ Error ImageItem_Overlay::read_overlay_spec()
   }
 
 
-  auto overlayDataResult = heif_file->get_uncompressed_item_data(get_id());
+  MemoryHandle input_memory;
+  auto overlayDataResult = heif_file->get_uncompressed_item_data(get_id(), &input_memory);
   if (!overlayDataResult) {
     return overlayDataResult.error();
   }

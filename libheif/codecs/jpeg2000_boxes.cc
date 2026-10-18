@@ -243,6 +243,7 @@ Error Box_pclr::parse(BitstreamRange& range, const heif_security_limits* limits)
 
   for (uint16_t j = 0; j < num_entries; j++) {
     PaletteEntry entry;
+    entry.columns.reserve(num_palette_columns);
     for (size_t i = 0; i < m_bitDepths.size(); i++) {
       if (m_bitDepths[i] <= 8) {
         entry.columns.push_back(range.read8());
